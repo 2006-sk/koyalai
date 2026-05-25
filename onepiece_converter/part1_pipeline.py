@@ -27,6 +27,25 @@ from utils.image_utils import (
 from utils.preprocessor import LineartPreprocessor
 
 
+def get_device() -> tuple[str, torch.dtype]:
+    if torch.cuda.is_available():
+        device = "cuda"
+        dtype = torch.float16
+        print(f"[device] CUDA detected: {torch.cuda.get_device_name(0)}")
+    elif torch.backends.mps.is_available():
+        device = "mps"
+        dtype = torch.float16
+        print("[device] MPS detected: Apple Silicon")
+    else:
+        device = "cpu"
+        dtype = torch.float32
+        print("[device] WARNING: Running on CPU — will be slow")
+    return device, dtype
+
+
+DEVICE, DTYPE = get_device()
+
+
 PROMPT = (
     "one piece anime, eiichiro oda art style, luffy style character, "
     "clean flat skin tone, bright cheerful manga, bold clean outlines, "
@@ -53,9 +72,11 @@ class PipelineResult:
     metadata: Dict[str, object]
 
 
-def clear_mps_cache() -> None:
-    """Release memory when running on MPS."""
-    if torch.backends.mps.is_available():
+def clear_device_cache() -> None:
+    """Release cache memory for active accelerator."""
+    if DEVICE == "cuda" and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    elif DEVICE == "mps" and torch.backends.mps.is_available():
         try:
             torch.mps.empty_cache()
         except Exception:
@@ -112,17 +133,19 @@ def bytes_to_gb(value: int) -> float:
 
 def resolve_device_and_dtype(device_preference: str = "auto") -> tuple[str, torch.dtype]:
     """Select execution device with dtype fallback."""
-    if device_preference == "cpu":
+    if device_preference == "cpu" or DEVICE == "cpu":
         print("[pipeline] Device override set to CPU.")
-        return "cpu", torch.float32
-    if device_preference == "mps":
-        if not torch.backends.mps.is_available():
+        return "cpu", DTYPE if DEVICE == "cpu" else torch.float32
+    if device_preference == "mps" or DEVICE == "mps":
+        if not torch.backends.mps.is_available() and device_preference == "mps":
             raise RuntimeError("Device override requested MPS, but MPS is not available.")
         print("[pipeline] Device override set to MPS.")
-        return "mps", torch.float32
-    if torch.backends.mps.is_available():
-        print("[pipeline] MPS detected. Using Apple Silicon acceleration.")
-        return "mps", torch.float32
+        return "mps", DTYPE
+    if device_preference == "cuda" or DEVICE == "cuda":
+        if not torch.cuda.is_available() and device_preference == "cuda":
+            raise RuntimeError("Device override requested CUDA, but CUDA is not available.")
+        print("[pipeline] CUDA detected. Using NVIDIA acceleration.")
+        return "cuda", DTYPE
     print("[pipeline] MPS not available. Falling back to CPU.")
     return "cpu", torch.float32
 
@@ -222,7 +245,7 @@ def build_pipeline(
 
     # AUTO-FIX: 25min bug path when UNet stays CPU float32.
     unet_device, unet_dtype = component_device_dtype(pipe.unet)
-    if unet_device == "cpu" and unet_dtype == "torch.float32" and torch.backends.mps.is_available():
+    if unet_device == "cpu" and unet_dtype == "torch.float32" and DEVICE == "mps":
         print(
             "[diagnostic] AUTO-FIX applied: UNet on CPU float32 detected; "
             "reloading as float16 -> moving to MPS -> recasting UNet to float32."
@@ -230,18 +253,18 @@ def build_pipeline(
         pipe = _load_pipeline_with_dtype(
             base_model_path,
             controlnet_path,
-            "mps",
-            torch.float16,
+            DEVICE,
+            DTYPE,
             diagnostic=diagnostic,
         )
-        pipe.unet.to(dtype=torch.float32)
-        device = "mps"
-        dtype = torch.float32
+        pipe.unet.to(dtype=DTYPE)
+        device = DEVICE
+        dtype = DTYPE
         if fixes_applied is not None:
             fixes_applied.append("Reloaded float16->MPS and recast UNet to float32")
 
-    # AUTO-FIX: ensure all major components are on MPS when available.
-    if torch.backends.mps.is_available():
+    # AUTO-FIX: ensure all major components are on selected accelerator.
+    if DEVICE in ("mps", "cuda"):
         for name, module in (
             ("UNet", pipe.unet),
             ("VAE", pipe.vae),
@@ -250,11 +273,11 @@ def build_pipeline(
         ):
             module_device, _module_dtype = component_device_dtype(module)
             if module_device == "cpu":
-                module.to("mps")
-                print(f"[diagnostic] AUTO-FIX applied: {name} moved to MPS.")
+                module.to(DEVICE)
+                print(f"[diagnostic] AUTO-FIX applied: {name} moved to {DEVICE}.")
                 if fixes_applied is not None:
-                    fixes_applied.append(f"{name} moved CPU->MPS")
-        device = "mps"
+                    fixes_applied.append(f"{name} moved CPU->{DEVICE}")
+        device = DEVICE
 
     return pipe, device, dtype
 
@@ -299,7 +322,7 @@ def run_part1(
         diagnostic=diagnostic,
         fixes_applied=fixes_applied,
     )
-    clear_mps_cache()
+    clear_device_cache()
 
     requested_steps = num_inference_steps
     if num_inference_steps > 20:
@@ -328,7 +351,8 @@ def run_part1(
         active_device: str,
     ) -> tuple[Image.Image, float]:
         """Run one generation pass and print output image stats."""
-        generator = torch.Generator(device="cpu").manual_seed(seed)
+        generator_device = DEVICE if DEVICE != "mps" else "cpu"
+        generator = torch.Generator(device=generator_device).manual_seed(seed)
         if diagnostic:
             unet_device, unet_dtype = component_device_dtype(active_pipe.unet)
             control_device, control_dtype = component_device_dtype(active_pipe.controlnet)
@@ -346,11 +370,13 @@ def run_part1(
             print(f"[diagnostic] mps_current_allocated={mps_current}")
             print(f"[diagnostic] mps_driver_allocated={mps_driver}")
 
-        if torch.backends.mps.is_available():
+        if DEVICE == "cuda" and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        elif DEVICE == "mps" and torch.backends.mps.is_available():
             mps_bytes = mps_allocated_bytes()
             if mps_bytes > int(6 * (1024**3)):
                 print("[diagnostic] WARNING: MPS memory > 6GB before generation, clearing cache.")
-                clear_mps_cache()
+                clear_device_cache()
                 fixes_applied.append("Cleared MPS cache (>6GB before generation)")
             torch.mps.empty_cache()
             torch.mps.synchronize()
@@ -403,7 +429,9 @@ def run_part1(
         return image, generation_elapsed
 
     print("[pipeline] Stage 4/5: Running ControlNet generation...")
-    if device == "mps":
+    if DEVICE == "cuda" and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    elif device == "mps":
         torch.mps.empty_cache()
     total_generation_start = time.time()
     output_image, _generation_elapsed = generate_image(pipe, device)
@@ -411,19 +439,19 @@ def run_part1(
     if float(output_array.mean()) < 5.0:
         print("AUTO-FIX: black output detected, retrying with float32")
         fixes_applied.append("Black output retry with float32")
-        if torch.backends.mps.is_available():
-            pipe = pipe.to("mps")
-            pipe.unet.to(dtype=torch.float32)
-            pipe.vae.to(dtype=torch.float32)
-            pipe.controlnet.to(dtype=torch.float32)
-            pipe.text_encoder.to(dtype=torch.float32)
-            output_image, _retry_elapsed = generate_image(pipe, "mps")
-            device = "mps"
+        if DEVICE in ("mps", "cuda"):
+            pipe = pipe.to(DEVICE)
+            pipe.unet.to(dtype=DTYPE)
+            pipe.vae.to(dtype=DTYPE)
+            pipe.controlnet.to(dtype=DTYPE)
+            pipe.text_encoder.to(dtype=DTYPE)
+            output_image, _retry_elapsed = generate_image(pipe, DEVICE)
+            device = DEVICE
         else:
-            pipe = pipe.to("cpu")
-            output_image, _retry_elapsed = generate_image(pipe, "cpu")
-            device = "cpu"
-        dtype = torch.float32
+            pipe = pipe.to(DEVICE)
+            output_image, _retry_elapsed = generate_image(pipe, DEVICE)
+            device = DEVICE
+        dtype = DTYPE
         output_array = np.array(output_image)
     total_generation_time = time.time() - total_generation_start
 
@@ -457,7 +485,7 @@ def run_part1(
     comparison_path = save_side_by_side(resized_input, lineart_image, output_image, outputs_dir, run_id)
     save_metadata_json(metadata, metadata_path)
 
-    clear_mps_cache()
+    clear_device_cache()
     print("[pipeline] Complete.")
     print(f"[pipeline] Original : {original_path}")
     print(f"[pipeline] Lineart  : {lineart_path}")
@@ -502,9 +530,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--device",
         type=str,
-        choices=("auto", "mps", "cpu"),
+        choices=("auto", "cuda", "mps", "cpu"),
         default="auto",
-        help="Execution device: auto (default), mps, or cpu.",
+        help="Execution device: auto (default), cuda, mps, or cpu.",
     )
     parser.add_argument(
         "--diagnostic",

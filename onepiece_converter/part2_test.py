@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import resource
 import time
@@ -223,12 +224,15 @@ class Part2Tester:
             rss_values.append(psutil.Process().memory_info().rss / float(1024**2))
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-        growth = max(rss_values) - min(rss_values) if rss_values else 10**9
-        memory_limit_mb = 2000.0 if torch.cuda.is_available() else 500.0
-        passed = growth <= memory_limit_mb
+        growth_mb = max(rss_values) - min(rss_values) if rss_values else 10**9
+        memory_limit_mb = 2000 if torch.cuda.is_available() else 500
+        memory_pass = True
+        if growth_mb > memory_limit_mb:
+            memory_pass = False
+        passed = memory_pass
         details = (
             f"rss_mb={','.join(f'{v:.1f}' for v in rss_values)} "
-            f"growth_mb={growth:.1f} limit_mb={memory_limit_mb:.1f} ({'OK' if passed else 'NO'}) "
+            f"growth_mb={growth_mb:.1f} limit_mb={memory_limit_mb:.1f} ({'OK' if passed else 'NO'}) "
             f"times_s={','.join(f'{t:.1f}' for t in run_times)}"
         )
         self.add_result(name, passed, "PASS" if passed else "FAIL", details)
@@ -343,9 +347,15 @@ class Part2Tester:
         pipe.vae.enable_slicing()
         return pipe
 
-    def test_hyperparameter_search(self) -> None:
+    def test_hyperparameter_search(
+        self,
+        target_image: Optional[Path] = None,
+        quick_scan: bool = False,
+    ) -> None:
         name = "TEST 7 — Hyperparameter Search"
-        target = INPUTS_DIR / "download (1).jpeg"
+        target = target_image or (INPUTS_DIR / "download (1).jpeg")
+        if not target.is_absolute():
+            target = (PROJECT_ROOT / target).resolve()
         if not target.exists():
             self.add_result(name, False, "FAIL", f"Target image not found: {target}")
             return
@@ -467,20 +477,27 @@ class Part2Tester:
             best_params_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
             best_saved = best_params_path.exists()
 
-        all_identity_zero = all(float(r.get("identity", 0.0)) == 0.0 for r in results)
-        passing_threshold = 30.0 if all_identity_zero else 60.0
+        all_identity_zero = all(r["identity"] == 0 for r in results)
+        passing_threshold = 30 if all_identity_zero else 60
+        winner_score = float(winner["composite"]) if winner is not None else 0.0
+        test7_pass = winner_score >= passing_threshold
         passed = (
             completed == 8
             and winner is not None
-            and float(winner["composite"]) >= passing_threshold
+            and test7_pass
             and best_saved
         )
         details = (
-            f"completed={completed}/8, winner_score={(winner['composite'] if winner else 0):.1f}, "
+            f"completed={completed}/8, winner_score={winner_score:.1f}, "
             f"threshold={passing_threshold:.1f}, all_identity_zero={all_identity_zero}, "
             f"best_params_saved={best_saved}"
         )
         self.add_result(name, passed, "PASS" if passed else "FAIL", details)
+        if quick_scan:
+            print(
+                f"[quick_hyperparam_scan] winner_score={winner_score:.1f}, "
+                f"threshold={passing_threshold}, pass={passed}"
+            )
 
     def run_all(self) -> None:
         self.test_face_detection_reliability()
@@ -514,7 +531,20 @@ class Part2Tester:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Run Part 2 tests.")
+    parser.add_argument("--quick-scan", action="store_true", help="Run only hyperparameter scan.")
+    parser.add_argument(
+        "--input",
+        type=str,
+        default="inputs/download (1).jpeg",
+        help="Input image for quick scan mode.",
+    )
+    args = parser.parse_args()
+
     tester = Part2Tester()
+    if args.quick_scan:
+        tester.test_hyperparameter_search(target_image=Path(args.input), quick_scan=True)
+        return
     tester.run_all()
 
 

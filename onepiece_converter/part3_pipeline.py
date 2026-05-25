@@ -10,67 +10,44 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 
+import cv2
+import numpy as np
 import torch
 from diffusers import (
+    AutoencoderKL,
     ControlNetModel,
     StableDiffusionImg2ImgPipeline,
     StableDiffusionXLControlNetImg2ImgPipeline,
     StableDiffusionXLImg2ImgPipeline,
 )
 from PIL import Image
-from transformers import CLIPVisionModelWithProjection
+from safetensors.torch import load_file
 
 from part1_pipeline import DEVICE, DTYPE, clear_device_cache, get_input_image_path, run_part1
-from part2_pipeline import _build_part2_pipeline, _download_ip_adapter_assets, run_part2
+from part2_pipeline import _build_part2_pipeline, run_part2
 from utils.color_grading import apply_arc_color_grading
-from utils.face_utils import FaceExtractor
 from utils.image_utils import load_image, resize_with_padding, save_metadata_json, timestamp_string
 from utils.lora_utils import apply_lora_if_available, download_onepiece_lora
 from utils.prompt_builder import analyze_scene, build_dynamic_prompt
 from utils.spatial_utils import detect_person_map, save_person_map_visualization
 
 
-SDXL_BASE_REPO = "cagliostrolab/animagine-xl-3.1"
-SDXL_CONTROLNET_REPO = "xinsir/controlnet-tile-sdxl-1.0"
+SDXL_BASE_REPO = "animagine-xl-4.0"
+SDXL_CONTROLNET_REPO = "controlnet-canny-sdxl-1.0-v2"
 SDXL_SIZE = 768
-SDXL_STEPS = 35
+SDXL_STEPS = 30
 SDXL_GUIDANCE = 7.0
+SDXL_CN_SCALE = 0.6
+SDXL_STRENGTH = 0.6
 
-SDXL_POSITIVE = (
-    "anime illustration, one piece style, eiichiro oda art, highly detailed, sharp lines, "
-    "flat cel shading, bold outlines, vibrant colors, architectural details preserved, "
-    "signs readable, all people preserved, consistent lighting"
+SDXL_POSITIVE_TEMPLATE = (
+    "masterpiece, best quality, anime style, one piece, eiichiro oda style, bold outlines, "
+    "flat cel shading, vibrant colors, sharp details, {scene_description}, {person_description}"
 )
 SDXL_NEGATIVE = (
-    "blurry, low quality, distorted faces, wrong anatomy, extra limbs, missing people, "
-    "changed background, different architecture"
+    "worst quality, low quality, jpeg artifacts, blurry, ugly, deformed, extra limbs, "
+    "bad anatomy, realistic photo, 3d render, watermark, signature"
 )
-
-KAGGLE_SDXL_SETUP_SNIPPET = """from huggingface_hub import hf_hub_download
-import os
-
-os.makedirs("models/sdxl_base", exist_ok=True)
-os.makedirs("models/sdxl_controlnet", exist_ok=True)
-
-hf_hub_download(
-    repo_id="xinsir/controlnet-tile-sdxl-1.0",
-    filename="diffusion_pytorch_model.safetensors",
-    local_dir="models/sdxl_controlnet",
-)
-
-for filename in [
-    "model_index.json",
-    "unet/diffusion_pytorch_model.fp16.safetensors",
-    "vae/diffusion_pytorch_model.fp16.safetensors",
-    "text_encoder/model.fp16.safetensors",
-    "text_encoder_2/model.fp16.safetensors",
-]:
-    hf_hub_download(
-        repo_id="cagliostrolab/animagine-xl-3.1",
-        filename=filename,
-        local_dir="models/sdxl_base",
-    )
-"""
 
 
 @dataclass
@@ -123,37 +100,59 @@ def _save_five_panel(
 
 
 def _sdxl_available(models_dir: Path) -> bool:
-    required = [
-        models_dir / "sdxl_base" / "model_index.json",
-        models_dir / "sdxl_base" / "unet" / "diffusion_pytorch_model.fp16.safetensors",
-        models_dir / "sdxl_base" / "vae" / "diffusion_pytorch_model.fp16.safetensors",
-        models_dir / "sdxl_base" / "text_encoder" / "model.fp16.safetensors",
-        models_dir / "sdxl_base" / "text_encoder_2" / "model.fp16.safetensors",
-        models_dir / "sdxl_controlnet" / "diffusion_pytorch_model.safetensors",
-    ]
-    return all(path.exists() for path in required)
+    return (models_dir / "sdxl_base" / "model_index.json").exists() and (
+        models_dir / "sdxl_controlnet" / "diffusion_pytorch_model_V2.safetensors"
+    ).exists()
+
+
+def get_canny(image: Image.Image, low: int = 100, high: int = 200) -> Image.Image:
+    rgb = np.array(image.convert("RGB"))
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    edges = cv2.Canny(gray, low, high)
+    edges_rgb = cv2.cvtColor(edges, cv2.COLOR_GRAY2RGB)
+    return Image.fromarray(edges_rgb)
 
 
 def _build_sdxl_main_pipe(models_dir: Path):
     controlnet = ControlNetModel.from_pretrained(
         (models_dir / "sdxl_controlnet").as_posix(),
-        torch_dtype=DTYPE,
+        torch_dtype=torch.float16,
         use_safetensors=True,
+    ).to(DEVICE)
+    state_dict = load_file(
+        (models_dir / "sdxl_controlnet" / "diffusion_pytorch_model_V2.safetensors").as_posix()
     )
+    missing_keys, unexpected_keys = controlnet.load_state_dict(state_dict, strict=False)
+    if missing_keys or unexpected_keys:
+        print(
+            "[part3] Warning: ControlNet state dict mismatch "
+            f"(missing={len(missing_keys)}, unexpected={len(unexpected_keys)})"
+        )
+    controlnet = controlnet.to(DEVICE)
+
+    vae = AutoencoderKL.from_pretrained(
+        (models_dir / "sdxl_base").as_posix(),
+        subfolder="vae",
+        torch_dtype=torch.float16,
+        use_safetensors=True,
+    ).to(DEVICE)
+
     pipe = StableDiffusionXLControlNetImg2ImgPipeline.from_pretrained(
         (models_dir / "sdxl_base").as_posix(),
         controlnet=controlnet,
-        torch_dtype=DTYPE,
+        vae=vae,
+        torch_dtype=torch.float16,
         use_safetensors=True,
         add_watermarker=False,
-    )
+    ).to(DEVICE)
+    pipe.enable_model_cpu_offload()
     return pipe.to(DEVICE)
 
 
 def _build_sdxl_harmonizer(models_dir: Path):
     pipe = StableDiffusionXLImg2ImgPipeline.from_pretrained(
         (models_dir / "sdxl_base").as_posix(),
-        torch_dtype=DTYPE,
+        torch_dtype=torch.float16,
         use_safetensors=True,
         add_watermarker=False,
     )
@@ -215,13 +214,18 @@ def run_part3(
 
     print("[part3] Step 4/8: Building dynamic prompt...")
     dynamic_positive, dynamic_negative = build_dynamic_prompt(scene_context, person_count, arc=arc)
-    positive_prompt = f"{SDXL_POSITIVE}, {dynamic_positive}"
-    negative_prompt = f"{SDXL_NEGATIVE}, {dynamic_negative}"
+    scene_type = str(scene_context.get("scene_type", "adventure manga scene"))
+    person_description = (
+        "single person character"
+        if person_count <= 1
+        else "multiple characters, each with distinct appearance"
+    )
+    positive_prompt = SDXL_POSITIVE_TEMPLATE.format(
+        scene_description=f"{scene_type} scene", person_description=person_description
+    )
+    negative_prompt = SDXL_NEGATIVE
 
     print("[part3] Step 5/8: Main generation with LoRA...")
-    face_extractor = FaceExtractor()
-    face_res = face_extractor.extract_face_crop(original)
-    ip_image = face_res.face_crop if face_res.face_crop is not None else original
     lora_path = download_onepiece_lora(models_dir)
     gen_device = DEVICE if DEVICE != "mps" else "cpu"
 
@@ -230,27 +234,22 @@ def run_part3(
     if _sdxl_available(models_dir):
         try:
             pipe = _build_sdxl_main_pipe(models_dir)
-            pipe.load_ip_adapter(
-                "h94/IP-Adapter",
-                subfolder="sdxl_models",
-                weight_name="ip-adapter_sdxl.bin",
-            )
-            pipe.set_ip_adapter_scale(ip_scale)
             lora_applied = apply_lora_if_available(pipe, lora_path, scale=0.7)
             generator = torch.Generator(device=gen_device).manual_seed(42)
+            canny_image = get_canny(original)
             result = pipe(
                 prompt=positive_prompt,
                 negative_prompt=negative_prompt,
                 image=original,
-                control_image=original,  # tile conditioning uses resized image directly
-                strength=denoising,
-                controlnet_conditioning_scale=cn_scale,
+                control_image=canny_image,
+                strength=SDXL_STRENGTH,
+                controlnet_conditioning_scale=SDXL_CN_SCALE,
                 num_inference_steps=SDXL_STEPS,
                 guidance_scale=SDXL_GUIDANCE,
                 generator=generator,
             )
             part3_pre = result.images[0].resize((SDXL_SIZE, SDXL_SIZE), Image.Resampling.LANCZOS)
-            control_panel = original.copy()
+            control_panel = canny_image
             used_sdxl = True
         except Exception as exc:
             print(f"[part3] Warning: SDXL path failed ({exc})")
@@ -258,25 +257,9 @@ def run_part3(
             used_sdxl = False
     else:
         print("SDXL not available, using SD1.5")
-        print("[part3] Kaggle SDXL setup snippet:")
-        print(KAGGLE_SDXL_SETUP_SNIPPET)
 
     if not used_sdxl:
         pipe, _device, _dtype = _build_part2_pipeline(root)
-        ip_file, _enc = _download_ip_adapter_assets(models_dir)
-        image_encoder = CLIPVisionModelWithProjection.from_pretrained(
-            "h94/IP-Adapter",
-            subfolder="models/image_encoder",
-            torch_dtype=DTYPE,
-        ).to(DEVICE)
-        pipe.image_encoder = image_encoder
-        pipe.load_ip_adapter(
-            "h94/IP-Adapter",
-            subfolder="models",
-            weight_name="ip-adapter_sd15.bin",
-            image_encoder_folder=None,
-        )
-        pipe.set_ip_adapter_scale(ip_scale)
         lora_applied = apply_lora_if_available(pipe, lora_path, scale=0.7)
         generator = torch.Generator(device=gen_device).manual_seed(42)
         result = pipe(
@@ -284,7 +267,6 @@ def run_part3(
             negative_prompt=dynamic_negative,
             image=original.resize((512, 512), Image.Resampling.LANCZOS),
             control_image=load_image(part1.lineart_path).resize((512, 512), Image.Resampling.LANCZOS),
-            ip_adapter_image=ip_image.resize((256, 256), Image.Resampling.LANCZOS),
             strength=denoising,
             controlnet_conditioning_scale=cn_scale,
             num_inference_steps=25,
@@ -292,7 +274,6 @@ def run_part3(
             generator=generator,
         )
         part3_pre = result.images[0].resize((SDXL_SIZE, SDXL_SIZE), Image.Resampling.LANCZOS)
-        ip_file = models_dir / "ip_adapter" / "ip-adapter_sd15.bin"
 
     print("[part3] Step 6/8: Harmonization pass...")
     harmonizer = _build_sdxl_harmonizer(models_dir) if used_sdxl else _build_sd15_harmonizer(root)
@@ -304,7 +285,7 @@ def run_part3(
         image=part3_pre if used_sdxl else part3_pre.resize((512, 512), Image.Resampling.LANCZOS),
         strength=0.15,
         guidance_scale=6.5,
-        num_inference_steps=12,
+        num_inference_steps=5 if used_sdxl else 12,
         generator=torch.Generator(device=gen_device).manual_seed(43),
     )
     harmonized = h_result.images[0].resize((SDXL_SIZE, SDXL_SIZE), Image.Resampling.LANCZOS)

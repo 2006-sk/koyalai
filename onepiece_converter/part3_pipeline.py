@@ -194,7 +194,7 @@ def run_part3(
     clear_device_cache()
     part3_final = ImageEnhance.Brightness(part3_pre).enhance(1.08)
     part3_final = ImageEnhance.Contrast(part3_final).enhance(1.20)
-    part3_final = ImageEnhance.Color(part3_final).enhance(1.45)
+    part3_final = ImageEnhance.Color(part3_final).enhance(1.15)
     part3_final = ImageEnhance.Sharpness(part3_final).enhance(1.30)
 
     run_id = f"{input_image.stem}_{timestamp_string()}"

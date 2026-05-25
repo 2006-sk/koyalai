@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 
+import cv2
+import numpy as np
 import torch
 from diffusers import StableDiffusionImg2ImgPipeline
 from PIL import Image
@@ -205,6 +207,28 @@ def run_part3(
         generator=generator,
     )
     part3_pre = result.images[0].resize((512, 512), Image.Resampling.LANCZOS)
+
+    if face_res.bbox_xyxy is not None:
+        part2_img = load_image(part2.part2_path).resize((512, 512), Image.Resampling.LANCZOS)
+        x1, y1, x2, y2 = face_res.bbox_xyxy
+        face_w = max(1, x2 - x1)
+        face_h = max(1, y2 - y1)
+        pad_x = int(face_w * 0.2)
+        pad_y = int(face_h * 0.2)
+        x1 = max(0, x1 - pad_x)
+        y1 = max(0, y1 - pad_y)
+        x2 = min(512, x2 + pad_x)
+        y2 = min(512, y2 + pad_y)
+        w_pad = max(1, x2 - x1)
+        h_pad = max(1, y2 - y1)
+        face_patch = part2_img.crop((x1, y1, x2, y2))
+
+        mask = np.zeros((h_pad, w_pad), dtype=np.uint8)
+        cx, cy = w_pad // 2, h_pad // 2
+        cv2.ellipse(mask, (cx, cy), (max(1, cx - 4), max(1, cy - 4)), 0, 0, 360, 255, -1)
+        mask = cv2.GaussianBlur(mask, (31, 31), 0)
+        mask_pil = Image.fromarray(mask).convert("L")
+        part3_pre.paste(face_patch, (x1, y1), mask_pil)
 
     print("[part3] Step 6/8: Harmonization pass...")
     harmonizer = _build_harmonizer(root)

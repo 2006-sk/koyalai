@@ -190,44 +190,25 @@ def _load_pipeline_with_dtype(
     """Load ControlNet pipeline for one dtype attempt."""
     print(f"[pipeline] Loading ControlNet with dtype={dtype}...")
     controlnet_start = time.time()
-    try:
-        controlnet = ControlNetModel.from_pretrained(
-            controlnet_path.as_posix(),
-            torch_dtype=dtype,
-            variant="fp16",
-            use_safetensors=True,
-        )
-    except Exception:
-        controlnet = ControlNetModel.from_pretrained(
-            controlnet_path.as_posix(),
-            torch_dtype=dtype,
-            use_safetensors=True,
-        )
+    controlnet = ControlNetModel.from_pretrained(
+        controlnet_path.as_posix(),
+        torch_dtype=dtype,
+        use_safetensors=True,
+    )
     controlnet_elapsed = time.time() - controlnet_start
     if diagnostic:
         print_component_load_info("ControlNet", controlnet, controlnet_elapsed)
 
     print(f"[pipeline] Loading base model with dtype={dtype}...")
     base_start = time.time()
-    try:
-        pipe = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(
-            base_model_path.as_posix(),
-            controlnet=controlnet,
-            torch_dtype=dtype,
-            variant="fp16",
-            use_safetensors=True,
-            safety_checker=None,
-            requires_safety_checker=False,
-        )
-    except Exception:
-        pipe = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(
-            base_model_path.as_posix(),
-            controlnet=controlnet,
-            torch_dtype=dtype,
-            use_safetensors=True,
-            safety_checker=None,
-            requires_safety_checker=False,
-        )
+    pipe = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(
+        base_model_path.as_posix(),
+        controlnet=controlnet,
+        torch_dtype=dtype,
+        use_safetensors=True,
+        safety_checker=None,
+        requires_safety_checker=False,
+    )
     base_elapsed = time.time() - base_start
     if diagnostic:
         print_component_load_info("UNet", pipe.unet, base_elapsed)

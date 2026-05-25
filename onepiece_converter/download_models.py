@@ -1,22 +1,50 @@
 #!/usr/bin/env python3
-"""Download required SD1.5 and IP-Adapter assets into ./models."""
+"""Download all required models into ./models with retries."""
 
 from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Iterable
+from typing import Dict
 
-from huggingface_hub import hf_hub_download
+from huggingface_hub import hf_hub_download, snapshot_download
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 MODELS_DIR = PROJECT_ROOT / "models"
 
+MODEL_TARGETS: Dict[str, str] = {
+    # Anything-v5 compatible repo in diffusers format.
+    "base_model": "stablediffusionapi/anything-v5",
+    "controlnet_lineart": "lllyasviel/control_v11p_sd15_lineart",
+    "lineart_annotators": "lllyasviel/Annotators",
+}
+
 MAX_RETRIES = 3
 
 IP_ADAPTER_DIR = MODELS_DIR / "ip_adapter"
 IP_ADAPTER_ENCODER_DIR = MODELS_DIR / "ip_adapter_encoder"
+
+
+def download_with_retry(repo_id: str, local_dir: Path) -> None:
+    """Download a model repo with retries and progress bars."""
+    local_dir.mkdir(parents=True, exist_ok=True)
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            print(f"[download] {repo_id} -> {local_dir} (attempt {attempt}/{MAX_RETRIES})")
+            snapshot_download(
+                repo_id=repo_id,
+                local_dir=local_dir.as_posix(),
+                local_dir_use_symlinks=False,
+                resume_download=True,
+            )
+            print(f"[download] Completed: {repo_id}")
+            return
+        except Exception as exc:
+            print(f"[download] Failed attempt {attempt} for {repo_id}: {exc}")
+            if attempt == MAX_RETRIES:
+                raise RuntimeError(f"Unable to download {repo_id} after {MAX_RETRIES} attempts.") from exc
+            time.sleep(2 * attempt)
 
 
 def ensure_project_dirs() -> None:
@@ -45,57 +73,9 @@ def download_file_with_retry(repo_id: str, filename: str, local_dir: Path) -> Pa
             time.sleep(2 * attempt)
 
 
-def download_many(repo_id: str, filenames: Iterable[str], local_dir: Path) -> None:
-    for filename in filenames:
-        download_file_with_retry(repo_id=repo_id, filename=filename, local_dir=local_dir)
-
-
-def download_sd15_base_model() -> None:
-    """Download minimal fp16 SD1.5 base model files."""
-    base_dir = MODELS_DIR / "base_model"
-    base_files = [
-        "model_index.json",
-        "scheduler/scheduler_config.json",
-        "tokenizer/merges.txt",
-        "tokenizer/special_tokens_map.json",
-        "tokenizer/tokenizer_config.json",
-        "tokenizer/vocab.json",
-        "text_encoder/config.json",
-        "text_encoder/model.fp16.safetensors",
-        "vae/config.json",
-        "vae/diffusion_pytorch_model.fp16.safetensors",
-        "unet/config.json",
-        "unet/diffusion_pytorch_model.fp16.safetensors",
-        "feature_extractor/preprocessor_config.json",
-    ]
-    print("[download] Downloading SD1.5 base model files...")
-    download_many("stablediffusionapi/anything-v5", base_files, base_dir)
-
-
-def download_sd15_controlnet() -> None:
-    """Download minimal SD1.5 lineart ControlNet files."""
-    controlnet_dir = MODELS_DIR / "controlnet_lineart"
-    controlnet_files = [
-        "config.json",
-        "diffusion_pytorch_model.fp16.safetensors",
-    ]
-    print("[download] Downloading SD1.5 lineart ControlNet files...")
-    download_many("lllyasviel/control_v11p_sd15_lineart", controlnet_files, controlnet_dir)
-
-
-def download_lineart_annotators() -> None:
-    """Download annotator files needed by controlnet_aux lineart preprocessor."""
-    annotator_dir = MODELS_DIR / "lineart_annotators"
-    annotator_files = [
-        "sk_model.pth",
-        "sk_model2.pth",
-    ]
-    print("[download] Downloading lineart annotator files...")
-    download_many("lllyasviel/Annotators", annotator_files, annotator_dir)
-
-
 def download_ip_adapter_assets() -> None:
     """Download Part 2 IP-Adapter and encoder assets."""
+    # Only the requested IP-Adapter checkpoint.
     src_file = download_file_with_retry(
         repo_id="h94/IP-Adapter",
         filename="models/ip-adapter_sd15.bin",
@@ -127,10 +107,9 @@ def download_ip_adapter_assets() -> None:
 def main() -> None:
     print("[download] Preparing project directories...")
     ensure_project_dirs()
-    print("[download] Starting SD1.5 model downloads...")
-    download_sd15_base_model()
-    download_sd15_controlnet()
-    download_lineart_annotators()
+    print("[download] Starting model downloads...")
+    for local_name, repo_id in MODEL_TARGETS.items():
+        download_with_retry(repo_id, MODELS_DIR / local_name)
     print("[download] Downloading IP-Adapter assets...")
     download_ip_adapter_assets()
     print("[download] All models are available.")

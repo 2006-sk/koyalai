@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Part 3 pipeline: SDXL quality stage."""
+"""Part 3 pipeline: LoRA + spatial handling + harmonization + color grading."""
 
 from __future__ import annotations
 
@@ -10,48 +10,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 
-import numpy as np
 import torch
-from diffusers import (
-    ControlNetModel,
-    StableDiffusionXLControlNetImg2ImgPipeline,
-    StableDiffusionXLImg2ImgPipeline,
-)
+from diffusers import StableDiffusionImg2ImgPipeline
 from PIL import Image
+from transformers import CLIPVisionModelWithProjection
 
-from part1_pipeline import (
-    DEVICE,
-    DTYPE,
-    clear_device_cache,
-    get_canny_image,
-    get_input_image_path,
-    run_part1,
-)
-from part2_pipeline import run_part2
-from utils.color_grading import apply_arc_color_grading
+from part1_pipeline import DEVICE, DTYPE, clear_device_cache, get_input_image_path, run_part1
+from part2_pipeline import _build_part2_pipeline, _download_ip_adapter_assets, run_part2
+from utils.color_grading import ARC_PALETTES, apply_arc_color_grading
+from utils.face_utils import FaceExtractor
 from utils.image_utils import load_image, resize_with_padding, save_metadata_json, timestamp_string
 from utils.lora_utils import apply_lora_if_available, download_onepiece_lora
+from utils.preprocessor import LineartPreprocessor
 from utils.prompt_builder import analyze_scene, build_dynamic_prompt
 from utils.spatial_utils import detect_person_map, save_person_map_visualization
-
-
-SDXL_BASE_REPO = "animagine-xl-4.0"
-SDXL_CONTROLNET_REPO = "controlnet-canny-sdxl-1.0-v2"
-SDXL_SIZE = 768
-SDXL_STEPS = 30
-SDXL_GUIDANCE = 7.0
-SDXL_CN_SCALE = 0.6
-SDXL_STRENGTH = 0.6
-
-SDXL_POSITIVE_TEMPLATE = (
-    "Acilia Anime, one piece anime style, eiichiro oda art, masterpiece, best quality, "
-    "bold outlines, flat cel shading, vibrant colors, sharp details, adventure manga panel, "
-    "{scene_description}, {person_description}"
-)
-SDXL_NEGATIVE = (
-    "worst quality, low quality, jpeg artifacts, blurry, ugly, deformed, extra limbs, "
-    "bad anatomy, realistic photo, 3d render, watermark, signature"
-)
 
 
 @dataclass
@@ -81,56 +53,30 @@ def _load_best_params(models_dir: Path) -> Dict[str, float]:
 
 def _save_five_panel(
     original: Image.Image,
-    panel2: Image.Image,
+    lineart: Image.Image,
     part1_img: Image.Image,
     part2_img: Image.Image,
     part3_img: Image.Image,
     output_path: Path,
 ) -> None:
-    target_size = (512, 512)
-    original = original.resize(target_size, Image.Resampling.LANCZOS)
-    panel2 = panel2.resize(target_size, Image.Resampling.LANCZOS)
-    part1_img = part1_img.resize(target_size, Image.Resampling.LANCZOS)
-    part2_img = part2_img.resize(target_size, Image.Resampling.LANCZOS)
-    part3_img = part3_img.resize(target_size, Image.Resampling.LANCZOS)
-    canvas = Image.new("RGB", (target_size[0] * 5, target_size[1]))
+    canvas = Image.new("RGB", (original.width * 5, original.height))
     canvas.paste(original, (0, 0))
-    canvas.paste(panel2, (target_size[0], 0))
-    canvas.paste(part1_img, (target_size[0] * 2, 0))
-    canvas.paste(part2_img, (target_size[0] * 3, 0))
-    canvas.paste(part3_img, (target_size[0] * 4, 0))
+    canvas.paste(lineart, (original.width, 0))
+    canvas.paste(part1_img, (original.width * 2, 0))
+    canvas.paste(part2_img, (original.width * 3, 0))
+    canvas.paste(part3_img, (original.width * 4, 0))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(output_path)
 
 
-def _sdxl_available(models_dir: Path) -> bool:
-    return (models_dir / "sdxl_base" / "model_index.json").exists() and (
-        models_dir / "sdxl_controlnet" / "diffusion_pytorch_model.safetensors"
-    ).exists()
-
-
-def _build_sdxl_harmonizer(models_dir: Path):
-    pipe = StableDiffusionXLImg2ImgPipeline.from_pretrained(
-        (models_dir / "sdxl_base").as_posix(),
-        torch_dtype=torch.float16,
+def _build_harmonizer(project_root: Path):
+    base_model_path = project_root / "models" / "base_model"
+    pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
+        base_model_path.as_posix(),
+        torch_dtype=DTYPE,
         use_safetensors=True,
-        add_watermarker=False,
-    )
-    return pipe.to(DEVICE)
-
-
-def _build_sdxl_main_pipe(models_dir: Path):
-    controlnet = ControlNetModel.from_pretrained(
-        (models_dir / "sdxl_controlnet").as_posix(),
-        torch_dtype=torch.float16,
-        use_safetensors=True,
-    )
-    pipe = StableDiffusionXLControlNetImg2ImgPipeline.from_pretrained(
-        (models_dir / "sdxl_base").as_posix(),
-        controlnet=controlnet,
-        torch_dtype=torch.float16,
-        use_safetensors=True,
-        add_watermarker=False,
+        safety_checker=None,
+        requires_safety_checker=False,
     )
     return pipe.to(DEVICE)
 
@@ -139,11 +85,9 @@ def run_part3(
     input_image: Path,
     project_root: Optional[Path] = None,
     arc: str = "adventure",
-    skip_baselines: bool = False,
 ) -> Part3Result:
     root = (project_root or Path(__file__).resolve().parent).resolve()
     models_dir = root / "models"
-    MODELS_DIR = models_dir
     outputs_dir = root / "outputs"
     outputs_dir.mkdir(parents=True, exist_ok=True)
 
@@ -153,30 +97,25 @@ def run_part3(
     denoising = params["denoising_strength"]
     print(f"[part3] Loaded best params: ip={ip_scale}, cn={cn_scale}, denoise={denoising}")
 
-    if skip_baselines:
-        print("[part3] Skipping baselines — running Part 3 only")
-        part1 = None
-        part2 = None
-    else:
-        print("[part3] Step 1/8: Running Part 1 and Part 2 baselines...")
-        part1 = run_part1(
-            input_image=input_image,
-            project_root=root,
-            controlnet_scale=cn_scale,
-            strength=denoising,
-            num_inference_steps=25,
-        )
-        part2 = run_part2(
-            input_image=input_image,
-            project_root=root,
-            controlnet_scale=cn_scale,
-            ip_adapter_scale=ip_scale,
-            strength=denoising,
-            num_inference_steps=25,
-        )
+    print("[part3] Step 1/8: Running Part 1 and Part 2 baselines...")
+    part1 = run_part1(
+        input_image=input_image,
+        project_root=root,
+        controlnet_scale=cn_scale,
+        strength=denoising,
+        num_inference_steps=25,
+    )
+    part2 = run_part2(
+        input_image=input_image,
+        project_root=root,
+        controlnet_scale=cn_scale,
+        ip_adapter_scale=ip_scale,
+        strength=denoising,
+        num_inference_steps=25,
+    )
 
     print("[part3] Step 2/8: Scene analysis...")
-    original = resize_with_padding(load_image(input_image), size=(SDXL_SIZE, SDXL_SIZE))
+    original = resize_with_padding(load_image(input_image), size=(512, 512))
     scene_context = analyze_scene(original)
 
     print("[part3] Step 3/8: Spatial person detection...")
@@ -184,100 +123,65 @@ def run_part3(
     person_count = int(person_map["person_count"])
 
     print("[part3] Step 4/8: Building dynamic prompt...")
-    dynamic_positive, dynamic_negative = build_dynamic_prompt(scene_context, person_count, arc=arc)
-    scene_type = str(scene_context.get("scene_type", "adventure manga scene"))
-    person_description = (
-        "single person character"
-        if person_count <= 1
-        else "multiple characters, each with distinct appearance"
-    )
-    positive_prompt = SDXL_POSITIVE_TEMPLATE.format(
-        scene_description=f"{scene_type} scene", person_description=person_description
-    )
-    negative_prompt = SDXL_NEGATIVE
+    positive_prompt, negative_prompt = build_dynamic_prompt(scene_context, person_count, arc=arc)
 
-    print("[part3] Step 5/8: Main generation with LoRA...")
+    print("[part3] Step 5/8: Main generation with LoRA + ControlNet + IP-Adapter...")
+    lineart_pre = LineartPreprocessor(model_dir=models_dir / "lineart_annotators")
+    lineart = lineart_pre.extract_lineart(original).convert("RGB")
+
+    pipe, _device, _dtype = _build_part2_pipeline(root)
+    ip_file, _encoder_dir = _download_ip_adapter_assets(models_dir)
+    image_encoder = CLIPVisionModelWithProjection.from_pretrained(
+        "h94/IP-Adapter",
+        subfolder="models/image_encoder",
+        torch_dtype=DTYPE,
+    ).to(DEVICE)
+    pipe.image_encoder = image_encoder
+    pipe.load_ip_adapter(
+        "h94/IP-Adapter",
+        subfolder="models",
+        weight_name="ip-adapter_sd15.bin",
+        image_encoder_folder=None,
+    )
+    pipe.set_ip_adapter_scale(ip_scale)
+
+    face_extractor = FaceExtractor()
+    face_res = face_extractor.extract_face_crop(original)
+    ip_image = face_res.face_crop if face_res.face_crop is not None else original
+
     lora_path = download_onepiece_lora(models_dir)
-    gen_device = DEVICE if DEVICE != "mps" else "cpu"
+    lora_applied = apply_lora_if_available(pipe, lora_path, scale=0.7)
 
-    if part1 is not None:
-        control_panel = load_image(part1.lineart_path).resize((SDXL_SIZE, SDXL_SIZE), Image.Resampling.LANCZOS)
-    else:
-        control_panel = get_canny_image(original)
-    if not _sdxl_available(models_dir):
-        raise FileNotFoundError(
-            "SDXL assets missing. Expected models/sdxl_base/model_index.json and "
-            "models/sdxl_controlnet/diffusion_pytorch_model.safetensors"
-        )
-    pipe = _build_sdxl_main_pipe(models_dir)
-    lora_applied = False
-    if lora_path is not None and lora_path.exists():
-        try:
-            pipe.load_lora_weights(
-                str(MODELS_DIR / "onepiece_lora"),
-                weight_name="pytorch_lora_weights.safetensors",
-            )
-            try:
-                adapter_names = list(pipe.get_active_adapters())
-                if adapter_names:
-                    pipe.set_adapters(adapter_names, adapter_weights=[0.7] * len(adapter_names))
-                else:
-                    pipe.fuse_lora(lora_scale=0.7)
-            except Exception as exc:
-                print(f"[part3] LoRA adapter set failed: {exc}, trying fuse_lora")
-                try:
-                    pipe.fuse_lora(lora_scale=0.7)
-                except Exception as exc2:
-                    print(f"[part3] LoRA fuse also failed: {exc2}, continuing without")
-            lora_applied = True
-        except Exception as exc:
-            print(f"[part3] Warning: LoRA load failed, continuing without LoRA: {exc}")
+    gen_device = DEVICE if DEVICE != "mps" else "cpu"
     generator = torch.Generator(device=gen_device).manual_seed(42)
-    canny_image = get_canny_image(original)
     result = pipe(
         prompt=positive_prompt,
         negative_prompt=negative_prompt,
         image=original,
-        control_image=canny_image,
-        strength=SDXL_STRENGTH,
-        controlnet_conditioning_scale=SDXL_CN_SCALE,
-        num_inference_steps=SDXL_STEPS,
-        guidance_scale=SDXL_GUIDANCE,
+        control_image=lineart,
+        ip_adapter_image=ip_image,
+        strength=denoising,
+        controlnet_conditioning_scale=cn_scale,
+        num_inference_steps=25,
+        guidance_scale=7.5,
         generator=generator,
     )
-    styled_image = result.images[0].resize((SDXL_SIZE, SDXL_SIZE), Image.Resampling.LANCZOS)
-    part3_pre = styled_image
-    control_panel = canny_image
+    part3_pre = result.images[0].resize((512, 512), Image.Resampling.LANCZOS)
 
     print("[part3] Step 6/8: Harmonization pass...")
-    harmonizer = _build_sdxl_harmonizer(models_dir)
+    harmonizer = _build_harmonizer(root)
     _ = apply_lora_if_available(harmonizer, lora_path, scale=0.35)
     h_start = time.time()
-    if styled_image is not None:
-        arr = np.array(styled_image)
-        if arr.size > 0 and float(arr.mean()) > 5.0:
-            try:
-                h_input = styled_image.resize((768, 768), Image.Resampling.LANCZOS)
-                h_result = harmonizer(
-                    prompt=positive_prompt,
-                    negative_prompt=negative_prompt,
-                    image=h_input,
-                    strength=0.15,
-                    guidance_scale=6.5,
-                    num_inference_steps=5,
-                    generator=torch.Generator(device=gen_device).manual_seed(43),
-                )
-                final_image = h_result.images[0]
-                print("[part3] Harmonization successful")
-            except Exception as exc:
-                print(f"[part3] Harmonization skipped: {exc}")
-                final_image = styled_image
-        else:
-            print("[part3] Harmonization skipped: invalid input image")
-            final_image = styled_image
-    else:
-        final_image = styled_image
-    harmonized = final_image.resize((SDXL_SIZE, SDXL_SIZE), Image.Resampling.LANCZOS)
+    h_result = harmonizer(
+        prompt=positive_prompt,
+        negative_prompt=negative_prompt,
+        image=part3_pre,
+        strength=0.15,
+        guidance_scale=6.5,
+        num_inference_steps=12,
+        generator=torch.Generator(device=gen_device).manual_seed(43),
+    )
+    harmonized = h_result.images[0].resize((512, 512), Image.Resampling.LANCZOS)
     harmonization_time = time.time() - h_start
     clear_device_cache()
 
@@ -295,19 +199,12 @@ def run_part3(
     part3_pre.save(part3_pre_path)
     part3_final.save(part3_path)
     save_person_map_visualization(original, person_map, person_map_path)
-    part1_img = (
-        load_image(part1.output_path)
-        if part1 is not None
-        else resize_with_padding(load_image(input_image), size=(512, 512))
-    )
-    part2_img = (
-        load_image(part2.part2_path)
-        if part2 is not None
-        else resize_with_padding(load_image(input_image), size=(512, 512))
-    )
+
+    part1_img = load_image(part1.output_path).resize((512, 512), Image.Resampling.LANCZOS)
+    part2_img = load_image(part2.part2_path).resize((512, 512), Image.Resampling.LANCZOS)
     _save_five_panel(
-        original=resize_with_padding(load_image(input_image), size=(512, 512)),
-        panel2=control_panel.resize((512, 512), Image.Resampling.LANCZOS),
+        original=original,
+        lineart=lineart,
         part1_img=part1_img,
         part2_img=part2_img,
         part3_img=part3_final,
@@ -318,19 +215,16 @@ def run_part3(
         "input_image": input_image.as_posix(),
         "arc": arc,
         "best_params": params,
-        "skip_baselines": skip_baselines,
-        "sdxl_used": True,
         "positive_prompt": positive_prompt,
         "negative_prompt": negative_prompt,
         "scene_context": scene_context,
         "person_map": person_map,
         "lora_path": lora_path.as_posix() if lora_path else None,
         "lora_applied": lora_applied,
+        "ip_adapter_weights": ip_file.as_posix(),
         "harmonization_time_s": harmonization_time,
         "device": DEVICE,
         "dtype": str(DTYPE),
-        "model_id": SDXL_BASE_REPO,
-        "controlnet_id": SDXL_CONTROLNET_REPO,
     }
     save_metadata_json(metadata, metadata_path)
     print(f"[part3] complete -> {part3_path}")
@@ -349,11 +243,6 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Part 3 One Piece converter pipeline.")
     parser.add_argument("--input", type=str, default=None, help="Path to input image.")
     parser.add_argument("--arc", type=str, default="adventure", choices=("adventure", "dramatic", "wano"))
-    parser.add_argument(
-        "--skip-baselines",
-        action="store_true",
-        help="Skip Part 1 and Part 2 and run Part 3 only.",
-    )
     return parser.parse_args()
 
 
@@ -361,12 +250,7 @@ def main() -> None:
     args = parse_args()
     root = Path(__file__).resolve().parent
     input_path = get_input_image_path(root, args.input)
-    run_part3(
-        input_image=input_path,
-        project_root=root,
-        arc=args.arc,
-        skip_baselines=args.skip_baselines,
-    )
+    run_part3(input_image=input_path, project_root=root, arc=args.arc)
 
 
 if __name__ == "__main__":

@@ -16,9 +16,9 @@ import numpy as np
 import torch
 from PIL import Image
 
-from part1_pipeline import get_canny_image, run_part1
+from part1_pipeline import run_part1
 from utils.image_utils import load_image, pil_to_numpy_rgb, resize_with_padding
-from utils.preprocessor import edge_density, edge_map, laplacian_variance
+from utils.preprocessor import LineartPreprocessor, edge_density, edge_map, laplacian_variance
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -83,6 +83,7 @@ def max_rss_gb() -> float:
 class Part1Tester:
     def __init__(self) -> None:
         self.results: List[TestResult] = []
+        self.preprocessor: Optional[LineartPreprocessor] = None
         self.cached_pipeline_run: Optional[Tuple[float, float, Path, Path, Path]] = None
         self.selected_images: Optional[Tuple[Path, Path, Path]] = None
 
@@ -133,6 +134,12 @@ class Part1Tester:
         )
         return [portrait, indoor, outdoor]
 
+    def ensure_preprocessor(self) -> LineartPreprocessor:
+        if self.preprocessor is None:
+            model_path = MODELS_DIR / "lineart_annotators"
+            self.preprocessor = LineartPreprocessor(model_dir=model_path if model_path.exists() else None)
+        return self.preprocessor
+
     def detect_key_region_bbox(self, image: Image.Image) -> Tuple[int, int, int, int]:
         """Try person detection; fallback to central region."""
         arr = cv2.cvtColor(np.array(image.convert("RGB")), cv2.COLOR_RGB2BGR)
@@ -182,6 +189,7 @@ class Part1Tester:
         required_imports = [
             "torch",
             "diffusers",
+            "controlnet_aux",
             "transformers",
             "accelerate",
             "safetensors",
@@ -211,8 +219,9 @@ class Part1Tester:
             errors.append("No accelerated device detected (CUDA or MPS).")
 
         expected_model_dirs = [
-            MODELS_DIR / "sdxl_base",
-            MODELS_DIR / "sdxl_controlnet",
+            MODELS_DIR / "base_model",
+            MODELS_DIR / "controlnet_lineart",
+            MODELS_DIR / "lineart_annotators",
         ]
         for model_dir in expected_model_dirs:
             if not model_dir.exists() or not any(model_dir.iterdir()):
@@ -227,6 +236,7 @@ class Part1Tester:
         name = "TEST 2 — Lineart Extraction Accuracy"
         try:
             images = self.ensure_test_images()
+            pre = self.ensure_preprocessor()
         except Exception as exc:
             self.add_result(name, False, "0/3", f"Setup failed: {exc}")
             return
@@ -236,7 +246,7 @@ class Part1Tester:
 
         for image_path in images:
             image = resize_with_padding(load_image(image_path))
-            lineart = get_canny_image(image)
+            lineart = pre.extract_lineart(image)
 
             edge_orig = edge_map(image)
             edge_line = edge_map(lineart)
@@ -295,6 +305,7 @@ class Part1Tester:
         name = "TEST 3 — ControlNet Structural Preservation"
         try:
             portrait = self.ensure_test_images()[0]
+            pre = self.ensure_preprocessor()
             elapsed, _mem, input_saved, lineart_saved, output_saved = self.run_pipeline_once(portrait)
             _ = elapsed
         except Exception as exc:
@@ -304,7 +315,7 @@ class Part1Tester:
         input_image = load_image(input_saved)
         input_lineart = load_image(lineart_saved)
         output_image = load_image(output_saved)
-        output_lineart = get_canny_image(output_image)
+        output_lineart = pre.extract_lineart(output_image)
 
         edge_input_line = edge_map(input_lineart)
         edge_output_line = edge_map(output_lineart)

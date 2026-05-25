@@ -14,7 +14,7 @@ import cv2
 import numpy as np
 import torch
 from diffusers import StableDiffusionImg2ImgPipeline
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageEnhance
 from transformers import CLIPVisionModelWithProjection
 
 from part1_pipeline import (
@@ -250,25 +250,77 @@ def run_part3(
     print("[part3] Step 7/8: Arc color grading...")
     part3_final = apply_arc_color_grading(harmonized, arc=arc, reference_input=original)
 
-    print("[part3] Step 8/8: Saving outputs...")
     run_id = f"{input_image.stem}_{timestamp_string()}"
     part3_path = outputs_dir / f"{run_id}_part3_styled.png"
     part3_pre_path = outputs_dir / f"{run_id}_part3_pre_harmonized.png"
+    pre_eye_path = outputs_dir / f"{run_id}_part3_pre_eye.png"
     comparison_path = outputs_dir / f"{run_id}_part3_comparison.png"
     person_map_path = outputs_dir / f"{run_id}_person_map.png"
     metadata_path = outputs_dir / f"{run_id}_part3_metadata.json"
 
+    print("[part3] Step 8b: Anime eye enhancement...")
+    pre_eye_enhanced = part3_final.copy()
+    pre_eye_enhanced.save(pre_eye_path)
+    part3_eye_enhanced = part3_final.copy()
+    gray = cv2.cvtColor(np.array(part3_final.convert("RGB")), cv2.COLOR_RGB2GRAY)
+    face_detector = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    eye_detector = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_eye.xml")
+    eye_fallback = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_eye_tree_eyeglasses.xml")
+    faces = face_detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(30, 30))
+    for fx, fy, fw, fh in faces:
+        face_gray = gray[fy : fy + fh, fx : fx + fw]
+        eyes = eye_detector.detectMultiScale(face_gray, scaleFactor=1.1, minNeighbors=3, minSize=(10, 10))
+        if len(eyes) == 0:
+            eyes = eye_fallback.detectMultiScale(face_gray, scaleFactor=1.1, minNeighbors=3, minSize=(10, 10))
+        for ex, ey, ew, eh in eyes:
+            eye_cx = fx + ex + (ew / 2.0)
+            eye_cy = fy + ey + (eh / 2.0)
+            exp_w = max(1, int(ew * 2.2))
+            exp_h = max(1, int(eh * 2.8))
+            x1 = max(0, int(eye_cx - exp_w / 2.0))
+            y1 = max(0, int(eye_cy - exp_h / 2.0))
+            x2 = min(512, int(eye_cx + exp_w / 2.0))
+            y2 = min(512, int(eye_cy + exp_h / 2.0))
+            if x2 <= x1 or y2 <= y1:
+                continue
+            region_w = x2 - x1
+            region_h = y2 - y1
+            eye_patch = part3_final.crop((x1, y1, x2, y2)).resize((128, 128), Image.Resampling.LANCZOS)
+            eye_patch = ImageEnhance.Contrast(eye_patch).enhance(1.4)
+            eye_patch = ImageEnhance.Color(eye_patch).enhance(1.3)
+            eye_patch = ImageEnhance.Sharpness(eye_patch).enhance(2.0).convert("RGBA")
+            draw = ImageDraw.Draw(eye_patch, "RGBA")
+            draw.ellipse([80, 8, 96, 22], fill=(255, 255, 255, 200))
+            draw.ellipse([20, 85, 30, 95], fill=(255, 255, 255, 120))
+            eye_patch = eye_patch.convert("RGB").resize((region_w, region_h), Image.Resampling.LANCZOS)
+
+            mask = np.zeros((region_h, region_w), dtype=np.uint8)
+            cv2.ellipse(
+                mask,
+                (region_w // 2, region_h // 2),
+                (max(1, region_w // 2 - 2), max(1, region_h // 2 - 2)),
+                0,
+                0,
+                360,
+                255,
+                -1,
+            )
+            mask = cv2.GaussianBlur(mask, (15, 15), 0)
+            mask_pil = Image.fromarray(mask).convert("L")
+            part3_eye_enhanced.paste(eye_patch, (x1, y1), mask_pil)
+    part3_final = part3_eye_enhanced
+
+    print("[part3] Step 8/8: Saving outputs...")
     part3_pre.save(part3_pre_path)
     part3_final.save(part3_path)
     save_person_map_visualization(original, person_map, person_map_path)
 
     part1_img = load_image(part1.output_path).resize((512, 512), Image.Resampling.LANCZOS)
-    part2_img = load_image(part2.part2_path).resize((512, 512), Image.Resampling.LANCZOS)
     _save_five_panel(
         original=original,
         lineart=lineart,
         part1_img=part1_img,
-        part2_img=part2_img,
+        part2_img=pre_eye_enhanced,
         part3_img=part3_final,
         output_path=comparison_path,
     )
@@ -284,6 +336,7 @@ def run_part3(
         "lora_path": lora_path.as_posix() if lora_path else None,
         "lora_applied": lora_applied,
         "ip_adapter_weights": ip_file.as_posix(),
+        "pre_eye_enhanced_path": pre_eye_path.as_posix(),
         "harmonization_time_s": harmonization_time,
         "device": DEVICE,
         "dtype": str(DTYPE),

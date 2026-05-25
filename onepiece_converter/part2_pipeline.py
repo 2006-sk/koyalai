@@ -11,6 +11,7 @@ from typing import Dict, Optional
 
 from huggingface_hub import hf_hub_download
 import torch
+from diffusers import ControlNetModel, StableDiffusionControlNetImg2ImgPipeline
 from PIL import Image
 from transformers import CLIPVisionModelWithProjection
 
@@ -21,7 +22,6 @@ from part1_pipeline import (
     DTYPE,
     NEGATIVE_PROMPT,
     PROMPT,
-    build_pipeline,
     clear_device_cache,
     get_input_image_path,
     run_part1,
@@ -93,6 +93,34 @@ def _download_ip_adapter_assets(models_dir: Path) -> tuple[Path, Path]:
     return target_ip, encoder_dir
 
 
+def _build_part2_pipeline(project_root: Path) -> tuple[StableDiffusionControlNetImg2ImgPipeline, str, torch.dtype]:
+    """Build a Part 2 pipeline without pre-IP-Adapter slicing hooks."""
+    model_root = project_root / "models"
+    base_model_path = model_root / "base_model"
+    controlnet_path = model_root / "controlnet_lineart"
+    if not base_model_path.exists():
+        raise FileNotFoundError(f"Missing base model directory: {base_model_path}")
+    if not controlnet_path.exists():
+        raise FileNotFoundError(f"Missing controlnet directory: {controlnet_path}")
+
+    controlnet = ControlNetModel.from_pretrained(
+        controlnet_path.as_posix(),
+        torch_dtype=DTYPE,
+        use_safetensors=True,
+    )
+    pipe = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(
+        base_model_path.as_posix(),
+        controlnet=controlnet,
+        torch_dtype=DTYPE,
+        use_safetensors=True,
+        safety_checker=None,
+        requires_safety_checker=False,
+    )
+    # IMPORTANT: do not enable attention/vae slicing before IP-Adapter load.
+    pipe = pipe.to(DEVICE)
+    return pipe, DEVICE, DTYPE
+
+
 def _save_four_panel(
     original: Image.Image,
     lineart: Image.Image,
@@ -158,13 +186,14 @@ def run_part2(
         save_face_crop(face_result.face_crop, face_crop_path)
 
     print("[part2] Stage 4/7: Loading ControlNet + IP-Adapter assets...")
-    ip_file, encoder_dir = _download_ip_adapter_assets(models_dir)
-    pipe, device, dtype = build_pipeline(root, device_preference="auto", diagnostic=False)
+    ip_file, _encoder_dir = _download_ip_adapter_assets(models_dir)
+    pipe, device, dtype = _build_part2_pipeline(root)
 
     print("[part2] Stage 5/7: Attaching IP-Adapter...")
     if not no_face_fallback:
         image_encoder = CLIPVisionModelWithProjection.from_pretrained(
-            str(models_dir / "ip_adapter_encoder"),
+            "h94/IP-Adapter",
+            subfolder="models/image_encoder",
             torch_dtype=torch.float16,
         ).to(DEVICE)
         pipe.image_encoder = image_encoder
@@ -175,6 +204,8 @@ def run_part2(
             image_encoder_folder=None,
         )
         pipe.set_ip_adapter_scale(0.5)
+        # Only after IP-Adapter is loaded.
+        pipe.vae.enable_slicing()
 
     print("[part2] Stage 6/7: Generating Part 2 output...")
     if DEVICE == "cuda" and torch.cuda.is_available():
@@ -241,7 +272,7 @@ def run_part2(
         "face_laplacian_variance": face_result.laplacian_variance,
         "no_face_fallback": no_face_fallback,
         "ip_adapter_weights": ip_file.as_posix(),
-        "ip_adapter_encoder_dir": encoder_dir.as_posix(),
+        "ip_adapter_encoder_dir": "h94/IP-Adapter/models/image_encoder",
         "generation_time_s": gen_elapsed,
     }
     save_metadata_json(metadata, metadata_path)

@@ -9,8 +9,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 
-import cv2
-import numpy as np
 import torch
 from PIL import Image, ImageDraw
 from transformers import CLIPVisionModelWithProjection
@@ -154,20 +152,6 @@ def run_part3(
     print("[part3] Step 5/6: Main generation with LoRA + ControlNet + IP-Adapter...")
     lineart_pre = LineartPreprocessor(model_dir=models_dir / "lineart_annotators")
     lineart = lineart_pre.extract_lineart(original).convert("RGB")
-    gray_original = cv2.cvtColor(np.array(original.convert("RGB")), cv2.COLOR_RGB2GRAY)
-    face_detector = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-    faces = face_detector.detectMultiScale(gray_original, scaleFactor=1.1, minNeighbors=4, minSize=(30, 30))
-    if len(faces) > 0:
-        x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
-        pad_x = int(w * 0.1)
-        pad_y = int(h * 0.1)
-        x1 = max(0, int(x - pad_x))
-        y1 = max(0, int(y - pad_y))
-        x2 = min(lineart.width, int(x + w + pad_x))
-        y2 = min(lineart.height, int(y + h + pad_y))
-        lineart_arr = np.array(lineart.convert("RGB"))
-        lineart_arr[y1:y2, x1:x2] = 255
-        lineart = Image.fromarray(lineart_arr).convert("RGB")
 
     lora_path = download_onepiece_lora(models_dir)
     pipe, _device, _dtype = _build_part2_pipeline(root)

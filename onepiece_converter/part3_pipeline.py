@@ -1,0 +1,258 @@
+#!/usr/bin/env python3
+"""Part 3 pipeline: LoRA + spatial handling + harmonization + color grading."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, Optional
+
+import torch
+from diffusers import StableDiffusionImg2ImgPipeline
+from PIL import Image
+from transformers import CLIPVisionModelWithProjection
+
+from part1_pipeline import DEVICE, DTYPE, clear_device_cache, get_input_image_path, run_part1
+from part2_pipeline import _build_part2_pipeline, _download_ip_adapter_assets, run_part2
+from utils.color_grading import ARC_PALETTES, apply_arc_color_grading
+from utils.face_utils import FaceExtractor
+from utils.image_utils import load_image, resize_with_padding, save_metadata_json, timestamp_string
+from utils.lora_utils import apply_lora_if_available, download_onepiece_lora
+from utils.preprocessor import LineartPreprocessor
+from utils.prompt_builder import analyze_scene, build_dynamic_prompt
+from utils.spatial_utils import detect_person_map, save_person_map_visualization
+
+
+@dataclass
+class Part3Result:
+    part3_path: Path
+    part3_pre_harmonized_path: Path
+    comparison_path: Path
+    person_map_path: Path
+    metadata_path: Path
+    metadata: Dict[str, object]
+
+
+def _load_best_params(models_dir: Path) -> Dict[str, float]:
+    best_path = models_dir / "best_params.json"
+    if best_path.exists():
+        try:
+            data = json.loads(best_path.read_text(encoding="utf-8"))
+            return {
+                "ip_adapter_scale": float(data.get("ip_adapter_scale", 0.4)),
+                "controlnet_scale": float(data.get("controlnet_scale", 0.7)),
+                "denoising_strength": float(data.get("denoising_strength", 0.55)),
+            }
+        except Exception as exc:
+            print(f"[part3] Warning: failed reading best_params.json: {exc}")
+    return {"ip_adapter_scale": 0.4, "controlnet_scale": 0.7, "denoising_strength": 0.55}
+
+
+def _save_five_panel(
+    original: Image.Image,
+    lineart: Image.Image,
+    part1_img: Image.Image,
+    part2_img: Image.Image,
+    part3_img: Image.Image,
+    output_path: Path,
+) -> None:
+    canvas = Image.new("RGB", (original.width * 5, original.height))
+    canvas.paste(original, (0, 0))
+    canvas.paste(lineart, (original.width, 0))
+    canvas.paste(part1_img, (original.width * 2, 0))
+    canvas.paste(part2_img, (original.width * 3, 0))
+    canvas.paste(part3_img, (original.width * 4, 0))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(output_path)
+
+
+def _build_harmonizer(project_root: Path):
+    base_model_path = project_root / "models" / "base_model"
+    pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
+        base_model_path.as_posix(),
+        torch_dtype=DTYPE,
+        use_safetensors=True,
+        safety_checker=None,
+        requires_safety_checker=False,
+    )
+    return pipe.to(DEVICE)
+
+
+def run_part3(
+    input_image: Path,
+    project_root: Optional[Path] = None,
+    arc: str = "adventure",
+) -> Part3Result:
+    root = (project_root or Path(__file__).resolve().parent).resolve()
+    models_dir = root / "models"
+    outputs_dir = root / "outputs"
+    outputs_dir.mkdir(parents=True, exist_ok=True)
+
+    params = _load_best_params(models_dir)
+    ip_scale = params["ip_adapter_scale"]
+    cn_scale = params["controlnet_scale"]
+    denoising = params["denoising_strength"]
+    print(f"[part3] Loaded best params: ip={ip_scale}, cn={cn_scale}, denoise={denoising}")
+
+    print("[part3] Step 1/8: Running Part 1 and Part 2 baselines...")
+    part1 = run_part1(
+        input_image=input_image,
+        project_root=root,
+        controlnet_scale=cn_scale,
+        strength=denoising,
+        num_inference_steps=25,
+    )
+    part2 = run_part2(
+        input_image=input_image,
+        project_root=root,
+        controlnet_scale=cn_scale,
+        ip_adapter_scale=ip_scale,
+        strength=denoising,
+        num_inference_steps=25,
+    )
+
+    print("[part3] Step 2/8: Scene analysis...")
+    original = resize_with_padding(load_image(input_image), size=(512, 512))
+    scene_context = analyze_scene(original)
+
+    print("[part3] Step 3/8: Spatial person detection...")
+    person_map = detect_person_map(original)
+    person_count = int(person_map["person_count"])
+
+    print("[part3] Step 4/8: Building dynamic prompt...")
+    positive_prompt, negative_prompt = build_dynamic_prompt(scene_context, person_count, arc=arc)
+
+    print("[part3] Step 5/8: Main generation with LoRA + ControlNet + IP-Adapter...")
+    lineart_pre = LineartPreprocessor(model_dir=models_dir / "lineart_annotators")
+    lineart = lineart_pre.extract_lineart(original).convert("RGB")
+
+    pipe, _device, _dtype = _build_part2_pipeline(root)
+    ip_file, _encoder_dir = _download_ip_adapter_assets(models_dir)
+    image_encoder = CLIPVisionModelWithProjection.from_pretrained(
+        "h94/IP-Adapter",
+        subfolder="models/image_encoder",
+        torch_dtype=DTYPE,
+    ).to(DEVICE)
+    pipe.image_encoder = image_encoder
+    pipe.load_ip_adapter(
+        "h94/IP-Adapter",
+        subfolder="models",
+        weight_name="ip-adapter_sd15.bin",
+        image_encoder_folder=None,
+    )
+    pipe.set_ip_adapter_scale(ip_scale)
+
+    face_extractor = FaceExtractor()
+    face_res = face_extractor.extract_face_crop(original)
+    ip_image = face_res.face_crop if face_res.face_crop is not None else original
+
+    lora_path = download_onepiece_lora(models_dir)
+    lora_applied = apply_lora_if_available(pipe, lora_path, scale=0.7)
+
+    gen_device = DEVICE if DEVICE != "mps" else "cpu"
+    generator = torch.Generator(device=gen_device).manual_seed(42)
+    result = pipe(
+        prompt=positive_prompt,
+        negative_prompt=negative_prompt,
+        image=original,
+        control_image=lineart,
+        ip_adapter_image=ip_image,
+        strength=denoising,
+        controlnet_conditioning_scale=cn_scale,
+        num_inference_steps=25,
+        guidance_scale=7.5,
+        generator=generator,
+    )
+    part3_pre = result.images[0].resize((512, 512), Image.Resampling.LANCZOS)
+
+    print("[part3] Step 6/8: Harmonization pass...")
+    harmonizer = _build_harmonizer(root)
+    _ = apply_lora_if_available(harmonizer, lora_path, scale=0.35)
+    h_start = time.time()
+    h_result = harmonizer(
+        prompt=positive_prompt,
+        negative_prompt=negative_prompt,
+        image=part3_pre,
+        strength=0.15,
+        guidance_scale=6.5,
+        num_inference_steps=12,
+        generator=torch.Generator(device=gen_device).manual_seed(43),
+    )
+    harmonized = h_result.images[0].resize((512, 512), Image.Resampling.LANCZOS)
+    harmonization_time = time.time() - h_start
+    clear_device_cache()
+
+    print("[part3] Step 7/8: Arc color grading...")
+    part3_final = apply_arc_color_grading(harmonized, arc=arc, reference_input=original)
+
+    print("[part3] Step 8/8: Saving outputs...")
+    run_id = f"{input_image.stem}_{timestamp_string()}"
+    part3_path = outputs_dir / f"{run_id}_part3_styled.png"
+    part3_pre_path = outputs_dir / f"{run_id}_part3_pre_harmonized.png"
+    comparison_path = outputs_dir / f"{run_id}_part3_comparison.png"
+    person_map_path = outputs_dir / f"{run_id}_person_map.png"
+    metadata_path = outputs_dir / f"{run_id}_part3_metadata.json"
+
+    part3_pre.save(part3_pre_path)
+    part3_final.save(part3_path)
+    save_person_map_visualization(original, person_map, person_map_path)
+
+    part1_img = load_image(part1.output_path).resize((512, 512), Image.Resampling.LANCZOS)
+    part2_img = load_image(part2.part2_path).resize((512, 512), Image.Resampling.LANCZOS)
+    _save_five_panel(
+        original=original,
+        lineart=lineart,
+        part1_img=part1_img,
+        part2_img=part2_img,
+        part3_img=part3_final,
+        output_path=comparison_path,
+    )
+
+    metadata: Dict[str, object] = {
+        "input_image": input_image.as_posix(),
+        "arc": arc,
+        "best_params": params,
+        "positive_prompt": positive_prompt,
+        "negative_prompt": negative_prompt,
+        "scene_context": scene_context,
+        "person_map": person_map,
+        "lora_path": lora_path.as_posix() if lora_path else None,
+        "lora_applied": lora_applied,
+        "ip_adapter_weights": ip_file.as_posix(),
+        "harmonization_time_s": harmonization_time,
+        "device": DEVICE,
+        "dtype": str(DTYPE),
+    }
+    save_metadata_json(metadata, metadata_path)
+    print(f"[part3] complete -> {part3_path}")
+
+    return Part3Result(
+        part3_path=part3_path,
+        part3_pre_harmonized_path=part3_pre_path,
+        comparison_path=comparison_path,
+        person_map_path=person_map_path,
+        metadata_path=metadata_path,
+        metadata=metadata,
+    )
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run Part 3 One Piece converter pipeline.")
+    parser.add_argument("--input", type=str, default=None, help="Path to input image.")
+    parser.add_argument("--arc", type=str, default="adventure", choices=("adventure", "dramatic", "wano"))
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    root = Path(__file__).resolve().parent
+    input_path = get_input_image_path(root, args.input)
+    run_part3(input_image=input_path, project_root=root, arc=args.arc)
+
+
+if __name__ == "__main__":
+    main()
+

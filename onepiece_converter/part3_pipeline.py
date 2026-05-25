@@ -14,7 +14,7 @@ import cv2
 import numpy as np
 import torch
 from diffusers import StableDiffusionImg2ImgPipeline
-from PIL import Image
+from PIL import Image, ImageDraw
 from transformers import CLIPVisionModelWithProjection
 
 from part1_pipeline import (
@@ -301,6 +301,112 @@ def run_part3(
     )
 
 
+def run_ip_scale_search(
+    input_image: Path,
+    project_root: Optional[Path],
+    arc: str = "adventure",
+) -> Path:
+    root = (project_root or Path(__file__).resolve().parent).resolve()
+    models_dir = root / "models"
+    output_dir = root / "outputs" / "ipsearch"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    configs = [
+        {"name": "cfg_1", "ip": 0.2, "lora": 0.5},
+        {"name": "cfg_2", "ip": 0.3, "lora": 0.5},
+        {"name": "cfg_3", "ip": 0.4, "lora": 0.5},
+        {"name": "cfg_4", "ip": 0.5, "lora": 0.5},
+        {"name": "cfg_5", "ip": 0.6, "lora": 0.5},
+        {"name": "cfg_6", "ip": 0.3, "lora": 0.35},
+        {"name": "cfg_7", "ip": 0.4, "lora": 0.35},
+        {"name": "cfg_8", "ip": 0.5, "lora": 0.35},
+        {"name": "cfg_9", "ip": 0.6, "lora": 0.35},
+        {"name": "cfg_10", "ip": 0.7, "lora": 0.35},
+    ]
+
+    original = resize_with_padding(load_image(input_image), size=(512, 512))
+    scene_context = analyze_scene(original)
+    person_map = detect_person_map(original)
+    person_count = int(person_map["person_count"])
+    positive_prompt, negative_prompt = build_dynamic_prompt(scene_context, person_count, arc=arc)
+
+    lineart_pre = LineartPreprocessor(model_dir=models_dir / "lineart_annotators")
+    lineart = lineart_pre.extract_lineart(original).convert("RGB")
+    face_res = FaceExtractor().extract_face_crop(original)
+    ip_image = face_res.face_crop if face_res.face_crop is not None else original
+
+    lora_path = download_onepiece_lora(models_dir)
+    pipe, _device, _dtype = _build_part2_pipeline(root)
+    _ip_file, _encoder_dir = _download_ip_adapter_assets(models_dir)
+    image_encoder = CLIPVisionModelWithProjection.from_pretrained(
+        "h94/IP-Adapter",
+        subfolder="models/image_encoder",
+        torch_dtype=DTYPE,
+    ).to(DEVICE)
+    pipe.image_encoder = image_encoder
+    pipe.load_ip_adapter(
+        "h94/IP-Adapter",
+        subfolder="models",
+        weight_name="ip-adapter_sd15.bin",
+        image_encoder_folder=None,
+    )
+
+    gen_device = DEVICE if DEVICE != "mps" else "cpu"
+    outputs: list[tuple[dict[str, float | str], Path]] = []
+    lora_fused = False
+    for cfg in configs:
+        if lora_fused:
+            pipe.unfuse_lora()
+            pipe.unload_lora_weights()
+            lora_fused = False
+        if lora_path is not None:
+            pipe.load_lora_weights(
+                lora_path.parent.as_posix(),
+                weight_name=lora_path.name,
+            )
+            pipe.fuse_lora(lora_scale=float(cfg["lora"]))
+            lora_fused = True
+        pipe.set_ip_adapter_scale(float(cfg["ip"]))
+
+        generator = torch.Generator(device=gen_device).manual_seed(42)
+        result = pipe(
+            prompt=positive_prompt,
+            negative_prompt=negative_prompt,
+            image=original,
+            control_image=lineart,
+            ip_adapter_image=ip_image,
+            strength=0.55,
+            controlnet_conditioning_scale=0.7,
+            num_inference_steps=20,
+            guidance_scale=7.5,
+            generator=generator,
+        )
+        image = result.images[0].resize((512, 512), Image.Resampling.LANCZOS)
+        out_path = output_dir / (
+            f"{cfg['name']}_ip{float(cfg['ip']):g}_lora{float(cfg['lora']):g}.png"
+        )
+        image.save(out_path)
+        outputs.append((cfg, out_path))
+        print(f"[part3] ip-search saved {out_path}")
+
+    grid = Image.new("RGB", (512 * 5, 512 * 2), (0, 0, 0))
+    for idx, (cfg, out_path) in enumerate(outputs):
+        cell = load_image(out_path).resize((512, 512), Image.Resampling.LANCZOS)
+        draw = ImageDraw.Draw(cell)
+        label = f"{cfg['name']} ip={float(cfg['ip']):g} lora={float(cfg['lora']):g}"
+        draw.rectangle((0, 0, 250, 30), fill=(0, 0, 0))
+        draw.text((8, 8), label, fill=(255, 255, 255))
+        x = (idx % 5) * 512
+        y = (idx // 5) * 512
+        grid.paste(cell, (x, y))
+
+    grid_path = output_dir / "comparison_grid.png"
+    grid.save(grid_path)
+    print(f"[part3] ip-search comparison grid saved {grid_path}")
+    clear_device_cache()
+    return grid_path
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Part 3 One Piece converter pipeline.")
     parser.add_argument("--input", type=str, default=None, help="Path to input image.")
@@ -310,6 +416,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--guidance", type=float, default=7.5)
     parser.add_argument("--lora-scale", type=float, default=0.35)
     parser.add_argument("--ip-scale-p3", type=float, default=0.55)
+    parser.add_argument("--ip-search", action="store_true")
     return parser.parse_args()
 
 
@@ -317,6 +424,9 @@ def main() -> None:
     args = parse_args()
     root = Path(__file__).resolve().parent
     input_path = get_input_image_path(root, args.input)
+    if args.ip_search:
+        run_ip_scale_search(input_path, root, args.arc)
+        return
     run_part3(
         input_image=input_path,
         project_root=root,

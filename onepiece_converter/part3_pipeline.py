@@ -42,8 +42,9 @@ SDXL_CN_SCALE = 0.6
 SDXL_STRENGTH = 0.6
 
 SDXL_POSITIVE_TEMPLATE = (
-    "masterpiece, best quality, anime style, one piece, eiichiro oda style, bold outlines, "
-    "flat cel shading, vibrant colors, sharp details, {scene_description}, {person_description}"
+    "Acilia Anime, one piece anime style, eiichiro oda art, masterpiece, best quality, "
+    "bold outlines, flat cel shading, vibrant colors, sharp details, adventure manga panel, "
+    "{scene_description}, {person_description}"
 )
 SDXL_NEGATIVE = (
     "worst quality, low quality, jpeg artifacts, blurry, ugly, deformed, extra limbs, "
@@ -123,6 +124,7 @@ def run_part3(
 ) -> Part3Result:
     root = (project_root or Path(__file__).resolve().parent).resolve()
     models_dir = root / "models"
+    MODELS_DIR = models_dir
     outputs_dir = root / "outputs"
     outputs_dir.mkdir(parents=True, exist_ok=True)
 
@@ -181,7 +183,17 @@ def run_part3(
             "models/sdxl_controlnet/diffusion_pytorch_model_V2.safetensors"
         )
     pipe, _p_device, _p_dtype = build_pipeline(root)
-    lora_applied = apply_lora_if_available(pipe, lora_path, scale=0.7)
+    lora_applied = False
+    if lora_path is not None and lora_path.exists():
+        try:
+            pipe.load_lora_weights(
+                str(MODELS_DIR / "onepiece_lora"),
+                weight_name="pytorch_lora_weights.safetensors",
+            )
+            pipe.set_adapters(["default_0"], adapter_weights=[0.7])
+            lora_applied = True
+        except Exception as exc:
+            print(f"[part3] Warning: LoRA load failed, continuing without LoRA: {exc}")
     generator = torch.Generator(device=gen_device).manual_seed(42)
     canny_image = get_canny_image(original)
     result = pipe(

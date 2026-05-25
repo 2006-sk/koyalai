@@ -73,7 +73,7 @@ def build_dynamic_prompt(
 ) -> tuple[str, str]:
     _ = scene_context, person_count, arc
     positive = (
-        "large expressive anime eyes, big bright eyes, thick dark eyelashes, "
+        "large expressive anime eyes, big bright eyes, "
         "wide open eyes, detailed iris, nami eyes, robin eyes, "
         "female character, feminine facial features, female one piece character, "
         "defined nose, oda style nose, manga nose, feminine but defined facial "
@@ -94,7 +94,7 @@ def build_dynamic_prompt(
         "3d render, smooth skin, photograph, western cartoon, chibi, deformed, "
         "ugly, watermark, text, extra limbs, bad anatomy, low quality, "
         "jpeg artifacts, noise, out of frame, small eyes, narrow eyes, "
-        "squinting, half closed eyes, no eyelashes, tired eyes, "
+        "squinting, half closed eyes, tired eyes, "
         "male face, masculine features, stub nose, triangle nose"
     )
     return positive, negative

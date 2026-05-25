@@ -19,6 +19,9 @@ REQUIRED_PACKAGES: List[str] = [
     "opencv-python",
     "numpy",
     "torch",
+    "mediapipe",
+    "deepface",
+    "scikit-learn",
 ]
 
 

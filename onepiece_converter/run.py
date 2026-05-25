@@ -17,6 +17,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the full One Piece converter pipeline.")
     parser.add_argument("--input", type=str, required=True, help="Input image path.")
     parser.add_argument("--arc", type=str, default="adventure", choices=("adventure", "dramatic", "wano"))
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--steps", type=int, default=25)
+    parser.add_argument("--guidance", type=float, default=7.5)
     return parser.parse_args()
 
 
@@ -45,15 +48,37 @@ def main() -> None:
     root = Path(__file__).resolve().parent
     input_path = get_input_image_path(root, args.input)
     print("[run] Part 1 starting...")
-    part1 = run_part1(input_image=input_path, project_root=root)
+    part1 = run_part1(
+        input_image=input_path,
+        project_root=root,
+        num_inference_steps=args.steps,
+        guidance_scale=args.guidance,
+        seed=args.seed,
+    )
     print("[run] Part 2 starting...")
-    part2 = run_part2(input_image=input_path, project_root=root)
+    part2 = run_part2(
+        input_image=input_path,
+        project_root=root,
+        num_inference_steps=args.steps,
+        guidance_scale=args.guidance,
+        seed=args.seed,
+    )
     print("[run] Part 3 starting...")
-    part3 = run_part3(input_image=input_path, project_root=root, arc=args.arc)
+    part3 = run_part3(
+        input_image=input_path,
+        project_root=root,
+        arc=args.arc,
+        part1_result=part1,
+        part2_result=part2,
+        seed=args.seed,
+        num_inference_steps=args.steps,
+        guidance_scale=args.guidance,
+    )
 
     final_dir = root / "outputs" / "final"
     final_image = final_dir / f"{input_path.stem}_final_part3.png"
     final_preview = final_dir / f"{input_path.stem}_full_progress.png"
+    Path(final_image).parent.mkdir(parents=True, exist_ok=True)
     Image.open(part3.part3_path).save(final_image)
     _save_final_preview(
         input_path=input_path,

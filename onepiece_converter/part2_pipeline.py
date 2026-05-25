@@ -216,21 +216,20 @@ def run_part2(
         save_face_crop(face_result.face_crop, face_crop_path)
 
     print("[part2] Stage 4/7: Loading ControlNet + IP-Adapter assets...")
-    ip_file, _encoder_dir = _download_ip_adapter_assets(models_dir)
+    ip_file, encoder_dir = _download_ip_adapter_assets(models_dir)
     pipe, device, dtype = _build_part2_pipeline(root)
 
     print("[part2] Stage 5/7: Attaching IP-Adapter...")
     if not no_face_fallback:
         image_encoder = CLIPVisionModelWithProjection.from_pretrained(
-            "h94/IP-Adapter",
-            subfolder="models/image_encoder",
-            torch_dtype=torch.float16,
+            encoder_dir.as_posix(),
+            torch_dtype=DTYPE,
         ).to(DEVICE)
         pipe.image_encoder = image_encoder
         pipe.load_ip_adapter(
-            "h94/IP-Adapter",
-            subfolder="models",
-            weight_name="ip-adapter_sd15.bin",
+            ip_file.parent.as_posix(),
+            subfolder="",
+            weight_name=ip_file.name,
             image_encoder_folder=None,
         )
         pipe.set_ip_adapter_scale(ip_adapter_scale)
@@ -302,7 +301,7 @@ def run_part2(
         "face_laplacian_variance": face_result.laplacian_variance,
         "no_face_fallback": no_face_fallback,
         "ip_adapter_weights": ip_file.as_posix(),
-        "ip_adapter_encoder_dir": "h94/IP-Adapter/models/image_encoder",
+        "ip_adapter_encoder_dir": encoder_dir.as_posix(),
         "generation_time_s": gen_elapsed,
     }
     save_metadata_json(metadata, metadata_path)

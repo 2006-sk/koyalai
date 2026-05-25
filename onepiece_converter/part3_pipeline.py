@@ -15,8 +15,20 @@ from diffusers import StableDiffusionImg2ImgPipeline
 from PIL import Image
 from transformers import CLIPVisionModelWithProjection
 
-from part1_pipeline import DEVICE, DTYPE, clear_device_cache, get_input_image_path, run_part1
-from part2_pipeline import _build_part2_pipeline, _download_ip_adapter_assets, run_part2
+from part1_pipeline import (
+    DEVICE,
+    DTYPE,
+    PipelineResult,
+    clear_device_cache,
+    get_input_image_path,
+    run_part1,
+)
+from part2_pipeline import (
+    Part2Result,
+    _build_part2_pipeline,
+    _download_ip_adapter_assets,
+    run_part2,
+)
 from utils.color_grading import ARC_PALETTES, apply_arc_color_grading
 from utils.face_utils import FaceExtractor
 from utils.image_utils import load_image, resize_with_padding, save_metadata_json, timestamp_string
@@ -85,6 +97,11 @@ def run_part3(
     input_image: Path,
     project_root: Optional[Path] = None,
     arc: str = "adventure",
+    part1_result: Optional[PipelineResult] = None,
+    part2_result: Optional[Part2Result] = None,
+    seed: int = 42,
+    num_inference_steps: int = 25,
+    guidance_scale: float = 7.5,
 ) -> Part3Result:
     root = (project_root or Path(__file__).resolve().parent).resolve()
     models_dir = root / "models"
@@ -98,21 +115,33 @@ def run_part3(
     print(f"[part3] Loaded best params: ip={ip_scale}, cn={cn_scale}, denoise={denoising}")
 
     print("[part3] Step 1/8: Running Part 1 and Part 2 baselines...")
-    part1 = run_part1(
-        input_image=input_image,
-        project_root=root,
-        controlnet_scale=cn_scale,
-        strength=denoising,
-        num_inference_steps=25,
-    )
-    part2 = run_part2(
-        input_image=input_image,
-        project_root=root,
-        controlnet_scale=cn_scale,
-        ip_adapter_scale=ip_scale,
-        strength=denoising,
-        num_inference_steps=25,
-    )
+    if part1_result is None:
+        part1 = run_part1(
+            input_image=input_image,
+            project_root=root,
+            controlnet_scale=cn_scale,
+            strength=denoising,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+            seed=seed,
+        )
+    else:
+        print("[part3] Step 1/8: Reusing provided Part 1 result.")
+        part1 = part1_result
+    if part2_result is None:
+        part2 = run_part2(
+            input_image=input_image,
+            project_root=root,
+            controlnet_scale=cn_scale,
+            ip_adapter_scale=ip_scale,
+            strength=denoising,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+            seed=seed,
+        )
+    else:
+        print("[part3] Step 1/8: Reusing provided Part 2 result.")
+        part2 = part2_result
 
     print("[part3] Step 2/8: Scene analysis...")
     original = resize_with_padding(load_image(input_image), size=(512, 512))
@@ -130,17 +159,16 @@ def run_part3(
     lineart = lineart_pre.extract_lineart(original).convert("RGB")
 
     pipe, _device, _dtype = _build_part2_pipeline(root)
-    ip_file, _encoder_dir = _download_ip_adapter_assets(models_dir)
+    ip_file, encoder_dir = _download_ip_adapter_assets(models_dir)
     image_encoder = CLIPVisionModelWithProjection.from_pretrained(
-        "h94/IP-Adapter",
-        subfolder="models/image_encoder",
+        encoder_dir.as_posix(),
         torch_dtype=DTYPE,
     ).to(DEVICE)
     pipe.image_encoder = image_encoder
     pipe.load_ip_adapter(
-        "h94/IP-Adapter",
-        subfolder="models",
-        weight_name="ip-adapter_sd15.bin",
+        ip_file.parent.as_posix(),
+        subfolder="",
+        weight_name=ip_file.name,
         image_encoder_folder=None,
     )
     pipe.set_ip_adapter_scale(ip_scale)
@@ -153,7 +181,7 @@ def run_part3(
     lora_applied = apply_lora_if_available(pipe, lora_path, scale=0.7)
 
     gen_device = DEVICE if DEVICE != "mps" else "cpu"
-    generator = torch.Generator(device=gen_device).manual_seed(42)
+    generator = torch.Generator(device=gen_device).manual_seed(seed)
     result = pipe(
         prompt=positive_prompt,
         negative_prompt=negative_prompt,
@@ -162,8 +190,8 @@ def run_part3(
         ip_adapter_image=ip_image,
         strength=denoising,
         controlnet_conditioning_scale=cn_scale,
-        num_inference_steps=25,
-        guidance_scale=7.5,
+        num_inference_steps=num_inference_steps,
+        guidance_scale=guidance_scale,
         generator=generator,
     )
     part3_pre = result.images[0].resize((512, 512), Image.Resampling.LANCZOS)
@@ -179,7 +207,7 @@ def run_part3(
         strength=0.15,
         guidance_scale=6.5,
         num_inference_steps=12,
-        generator=torch.Generator(device=gen_device).manual_seed(43),
+        generator=torch.Generator(device=gen_device).manual_seed(seed + 1),
     )
     harmonized = h_result.images[0].resize((512, 512), Image.Resampling.LANCZOS)
     harmonization_time = time.time() - h_start
@@ -243,6 +271,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Part 3 One Piece converter pipeline.")
     parser.add_argument("--input", type=str, default=None, help="Path to input image.")
     parser.add_argument("--arc", type=str, default="adventure", choices=("adventure", "dramatic", "wano"))
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--steps", type=int, default=25)
+    parser.add_argument("--guidance", type=float, default=7.5)
     return parser.parse_args()
 
 
@@ -250,7 +281,14 @@ def main() -> None:
     args = parse_args()
     root = Path(__file__).resolve().parent
     input_path = get_input_image_path(root, args.input)
-    run_part3(input_image=input_path, project_root=root, arc=args.arc)
+    run_part3(
+        input_image=input_path,
+        project_root=root,
+        arc=args.arc,
+        seed=args.seed,
+        num_inference_steps=args.steps,
+        guidance_scale=args.guidance,
+    )
 
 
 if __name__ == "__main__":

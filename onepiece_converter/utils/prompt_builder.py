@@ -74,10 +74,10 @@ def build_dynamic_prompt(
     _ = scene_context, person_count, arc
     positive = (
         "large expressive anime eyes, big bright eyes, "
-        "wide open eyes, detailed iris, nami eyes, robin eyes, "
-        "female character, feminine facial features, female one piece character, "
-        "defined nose, oda style nose, manga nose, feminine but defined facial "
-        "features, strong feminine jaw, bold black outlines on face, "
+        "wide open eyes, detailed iris, "
+        "one piece character, defined facial features, strong jaw, "
+        "expressive anime face, oda style character face, "
+        "defined nose, oda style nose, manga nose, bold black outlines on face, "
         "cel shaded skin tones, "
         "masterpiece, best quality, official one piece art, eiichiro oda art style, "
         "anime cel shading, bold black ink outlines, clean line art, "
@@ -94,8 +94,7 @@ def build_dynamic_prompt(
         "3d render, smooth skin, photograph, western cartoon, chibi, deformed, "
         "ugly, watermark, text, extra limbs, bad anatomy, low quality, "
         "jpeg artifacts, noise, out of frame, small eyes, narrow eyes, "
-        "squinting, half closed eyes, tired eyes, "
-        "male face, masculine features, stub nose, triangle nose"
+        "squinting, half closed eyes, tired eyes"
     )
     return positive, negative
 

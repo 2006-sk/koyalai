@@ -85,7 +85,9 @@ def build_dynamic_prompt(
     arc_desc = ARC_DESCRIPTORS.get(arc, ARC_DESCRIPTORS["adventure"])
     face_desc = (
         "female character, feminine facial features, female anime face, "
-        "small delicate nose, soft feminine jaw, female one piece character"
+        "small delicate nose, soft feminine jaw, female one piece character, "
+        "large expressive anime eyes, big bright eyes, thick dark eyelashes, "
+        "detailed iris, nami eyes, robin eyes, wide open eyes"
     )
     multi_desc = (
         "multiple characters, each with distinct appearance"
@@ -96,7 +98,8 @@ def build_dynamic_prompt(
     negative = (
         "realistic, photorealistic, 3d, horror, scary, gradient skin, blurry, deformed, "
         "watermark, ugly, extra limbs, bad anatomy, male face, masculine features, "
-        "male nose, stub nose, triangle nose, male jaw, masculine"
+        "male nose, stub nose, triangle nose, male jaw, masculine, small eyes, "
+        "narrow eyes, squinting, half closed eyes, no eyelashes, tired eyes"
     )
     return positive, negative
 

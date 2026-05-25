@@ -71,32 +71,24 @@ def build_dynamic_prompt(
     person_count: int,
     arc: str = "adventure",
 ) -> tuple[str, str]:
-    eyes = (
+    _ = scene_context, person_count, arc
+    positive = (
         "large expressive anime eyes, big bright eyes, thick dark eyelashes, "
         "wide open eyes, detailed iris, nami eyes, robin eyes, "
-    )
-    face = (
         "female character, feminine facial features, female one piece character, "
         "defined nose, oda style nose, manga nose, feminine but defined facial "
         "features, strong feminine jaw, bold black outlines on face, "
         "cel shaded skin tones, "
-    )
-    style_core = (
         "masterpiece, best quality, official one piece art, eiichiro oda art style, "
         "anime cel shading, bold black ink outlines, clean line art, "
         "thick bold black outlines, heavy ink lines, high contrast anime shading, "
         "vivid saturated colors, cel shaded with hard shadows, "
+        "detailed clothing folds, fabric texture, one piece character outfit, "
+        "detailed outdoor background, day lighting, atmospheric depth, vivid environment, "
+        "adventure mood, heroic energy, ocean breeze palette, "
+        "single character focus, hero shot, "
+        "8k, sharp focus, vibrant colors, professional illustration, manga panel quality"
     )
-    body = "detailed clothing folds, fabric texture, one piece character outfit, "
-    scene_desc = (
-        f"detailed {scene_context['scene_type']} background, "
-        f"{scene_context['time_of_day']} lighting, "
-        "atmospheric depth, vivid environment, "
-    )
-    arc_desc = ARC_DESCRIPTORS.get(arc, ARC_DESCRIPTORS["adventure"])
-    person_desc = "multiple characters, ensemble cast" if person_count > 1 else "single character focus, hero shot"
-    quality_tail = "8k, sharp focus, vibrant colors, professional illustration, manga panel quality"
-    positive = f"{eyes}{face}{style_core}{body}{scene_desc}{arc_desc}, {person_desc}, {quality_tail}"
     negative = (
         "photorealistic, realistic skin, soft gradients on face, blurry face, "
         "3d render, smooth skin, photograph, western cartoon, chibi, deformed, "

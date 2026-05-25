@@ -9,10 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 
-import cv2
-import numpy as np
 import torch
-from PIL import Image, ImageDraw, ImageEnhance
+from PIL import Image, ImageDraw
 from transformers import CLIPVisionModelWithProjection
 
 from part1_pipeline import (
@@ -53,18 +51,18 @@ def _load_best_params(models_dir: Path) -> Dict[str, float]:
         try:
             data = json.loads(best_path.read_text(encoding="utf-8"))
             return {
-                "ip_adapter_scale": float(data.get("ip_adapter_scale", 0.45)),
-                "controlnet_scale": float(data.get("controlnet_scale", 0.65)),
-                "denoising_strength": float(data.get("denoising_strength", 0.65)),
-                "lora_scale": float(data.get("lora_scale", 0.45)),
+                "ip_adapter_scale": float(data.get("ip_adapter_scale", 0.5)),
+                "controlnet_scale": float(data.get("controlnet_scale", 0.7)),
+                "denoising_strength": float(data.get("denoising_strength", 0.55)),
+                "lora_scale": float(data.get("lora_scale", 0.35)),
             }
         except Exception as exc:
             print(f"[part3] Warning: failed reading best_params.json: {exc}")
     return {
-        "ip_adapter_scale": 0.45,
-        "controlnet_scale": 0.65,
-        "denoising_strength": 0.65,
-        "lora_scale": 0.45,
+        "ip_adapter_scale": 0.5,
+        "controlnet_scale": 0.7,
+        "denoising_strength": 0.55,
+        "lora_scale": 0.35,
     }
 
 
@@ -95,8 +93,8 @@ def run_part3(
     seed: int = 42,
     num_inference_steps: int = 25,
     guidance_scale: float = 7.5,
-    lora_scale: float = 0.45,
-    ip_scale_p3: float = 0.45,
+    lora_scale: float = 0.35,
+    ip_scale_p3: float = 0.5,
 ) -> Part3Result:
     root = (project_root or Path(__file__).resolve().parent).resolve()
     models_dir = root / "models"
@@ -107,9 +105,11 @@ def run_part3(
     ip_scale = params["ip_adapter_scale"]
     cn_scale = params["controlnet_scale"]
     denoising = params["denoising_strength"]
+    lora_scale = float(params.get("lora_scale", lora_scale))
+    ip_scale_p3 = float(params.get("ip_adapter_scale", ip_scale_p3))
     print(f"[part3] Loaded best params: ip={ip_scale}, cn={cn_scale}, denoise={denoising}")
 
-    print("[part3] Step 1/7: Running Part 1 and Part 2 baselines...")
+    print("[part3] Step 1/6: Running Part 1 and Part 2 baselines...")
     if part1_result is None:
         part1 = run_part1(
             input_image=input_image,
@@ -121,7 +121,7 @@ def run_part3(
             seed=seed,
         )
     else:
-        print("[part3] Step 1/7: Reusing provided Part 1 result.")
+        print("[part3] Step 1/6: Reusing provided Part 1 result.")
         part1 = part1_result
     if part2_result is None:
         part2 = run_part2(
@@ -135,21 +135,21 @@ def run_part3(
             seed=seed,
         )
     else:
-        print("[part3] Step 1/7: Reusing provided Part 2 result.")
+        print("[part3] Step 1/6: Reusing provided Part 2 result.")
         part2 = part2_result
 
-    print("[part3] Step 2/7: Scene analysis...")
+    print("[part3] Step 2/6: Scene analysis...")
     original = resize_with_padding(load_image(input_image), size=(512, 512))
     scene_context = analyze_scene(original)
 
-    print("[part3] Step 3/7: Spatial person detection...")
+    print("[part3] Step 3/6: Spatial person detection...")
     person_map = detect_person_map(original)
     person_count = int(person_map["person_count"])
 
-    print("[part3] Step 4/7: Building dynamic prompt...")
+    print("[part3] Step 4/6: Building dynamic prompt...")
     positive_prompt, negative_prompt = build_dynamic_prompt(scene_context, person_count, arc=arc)
 
-    print("[part3] Step 5/7: Main generation with LoRA + ControlNet + IP-Adapter...")
+    print("[part3] Step 5/6: Main generation with LoRA + ControlNet + IP-Adapter...")
     lineart_pre = LineartPreprocessor(model_dir=models_dir / "lineart_annotators")
     lineart = lineart_pre.extract_lineart(original).convert("RGB")
 
@@ -176,7 +176,7 @@ def run_part3(
     ip_image = face_res.face_crop if face_res.face_crop is not None else original
 
     gen_device = DEVICE if DEVICE != "mps" else "cpu"
-    generator = torch.Generator(device=gen_device).manual_seed(seed)
+    generator = torch.Generator(device=gen_device).manual_seed(42)
     result = pipe(
         prompt=positive_prompt,
         negative_prompt=negative_prompt,
@@ -185,39 +185,14 @@ def run_part3(
         ip_adapter_image=ip_image,
         strength=denoising,
         controlnet_conditioning_scale=cn_scale,
-        num_inference_steps=num_inference_steps,
-        guidance_scale=guidance_scale,
+        num_inference_steps=20,
+        guidance_scale=7.5,
         generator=generator,
     )
     part3_pre = result.images[0].resize((512, 512), Image.Resampling.LANCZOS)
 
-    if face_res.bbox_xyxy is not None:
-        part2_img = load_image(part2.part2_path).resize((512, 512), Image.Resampling.LANCZOS)
-        x1, y1, x2, y2 = face_res.bbox_xyxy
-        face_w = max(1, x2 - x1)
-        face_h = max(1, y2 - y1)
-        pad_x = int(face_w * 0.2)
-        pad_y = int(face_h * 0.2)
-        x1 = max(0, x1 - pad_x)
-        y1 = max(0, y1 - pad_y)
-        x2 = min(512, x2 + pad_x)
-        y2 = min(512, y2 + pad_y)
-        w_pad = max(1, x2 - x1)
-        h_pad = max(1, y2 - y1)
-        face_patch = part2_img.crop((x1, y1, x2, y2))
-
-        mask = np.zeros((h_pad, w_pad), dtype=np.uint8)
-        cx, cy = w_pad // 2, h_pad // 2
-        cv2.ellipse(mask, (cx, cy), (max(1, cx - 4), max(1, cy - 4)), 0, 0, 360, 255, -1)
-        mask = cv2.GaussianBlur(mask, (31, 31), 0)
-        mask_pil = Image.fromarray(mask).convert("L")
-        part3_pre.paste(face_patch, (x1, y1), mask_pil)
-
     clear_device_cache()
-
-    print("[part3] Step 6/7: Light color enhancement...")
-    part3_final = ImageEnhance.Contrast(part3_pre).enhance(1.08)
-    part3_final = ImageEnhance.Color(part3_final).enhance(1.10)
+    part3_final = part3_pre
 
     run_id = f"{input_image.stem}_{timestamp_string()}"
     part3_path = outputs_dir / f"{run_id}_part3_styled.png"
@@ -226,7 +201,7 @@ def run_part3(
     person_map_path = outputs_dir / f"{run_id}_person_map.png"
     metadata_path = outputs_dir / f"{run_id}_part3_metadata.json"
 
-    print("[part3] Step 7/7: Saving outputs...")
+    print("[part3] Step 6/6: Saving outputs...")
     part3_pre.save(part3_pre_path)
     part3_final.save(part3_path)
     save_person_map_visualization(original, person_map, person_map_path)
@@ -382,8 +357,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--steps", type=int, default=25)
     parser.add_argument("--guidance", type=float, default=7.5)
-    parser.add_argument("--lora-scale", type=float, default=0.45)
-    parser.add_argument("--ip-scale-p3", type=float, default=0.45)
+    parser.add_argument("--lora-scale", type=float, default=0.35)
+    parser.add_argument("--ip-scale-p3", type=float, default=0.5)
     parser.add_argument("--ip-search", action="store_true")
     return parser.parse_args()
 

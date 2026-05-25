@@ -36,7 +36,10 @@ def apply_lora_if_available(pipe, lora_path: Optional[Path], scale: float) -> bo
             lora_path.parent.as_posix(),
             weight_name=LORA_FILE,
         )
-        pipe.set_adapters(["default_0"], adapter_weights=[scale])
+        try:
+            pipe.set_adapters(["default"], adapter_weights=[scale])
+        except Exception:
+            pipe.fuse_lora(lora_scale=scale)
         return True
     except Exception as exc:
         print(f"[part3] Warning: LoRA load failed, continuing without LoRA: {exc}")

@@ -190,7 +190,10 @@ def run_part3(
                 str(MODELS_DIR / "onepiece_lora"),
                 weight_name="pytorch_lora_weights.safetensors",
             )
-            pipe.set_adapters(["default_0"], adapter_weights=[0.7])
+            try:
+                pipe.set_adapters(["default"], adapter_weights=[0.7])
+            except Exception:
+                pipe.fuse_lora(lora_scale=0.7)
             lora_applied = True
         except Exception as exc:
             print(f"[part3] Warning: LoRA load failed, continuing without LoRA: {exc}")
@@ -207,23 +210,29 @@ def run_part3(
         guidance_scale=SDXL_GUIDANCE,
         generator=generator,
     )
-    part3_pre = result.images[0].resize((SDXL_SIZE, SDXL_SIZE), Image.Resampling.LANCZOS)
+    styled_image = result.images[0].resize((SDXL_SIZE, SDXL_SIZE), Image.Resampling.LANCZOS)
+    part3_pre = styled_image
     control_panel = canny_image
 
     print("[part3] Step 6/8: Harmonization pass...")
     harmonizer = _build_sdxl_harmonizer(models_dir)
     _ = apply_lora_if_available(harmonizer, lora_path, scale=0.35)
     h_start = time.time()
-    h_result = harmonizer(
-        prompt=positive_prompt,
-        negative_prompt=negative_prompt,
-        image=part3_pre,
-        strength=0.15,
-        guidance_scale=6.5,
-        num_inference_steps=5,
-        generator=torch.Generator(device=gen_device).manual_seed(43),
-    )
-    harmonized = h_result.images[0].resize((SDXL_SIZE, SDXL_SIZE), Image.Resampling.LANCZOS)
+    try:
+        h_result = harmonizer(
+            prompt=positive_prompt,
+            negative_prompt=negative_prompt,
+            image=part3_pre,
+            strength=0.15,
+            guidance_scale=6.5,
+            num_inference_steps=5,
+            generator=torch.Generator(device=gen_device).manual_seed(43),
+        )
+        final_image = h_result.images[0]
+    except Exception as exc:
+        print(f"[part3] Harmonization skipped: {exc}")
+        final_image = styled_image
+    harmonized = final_image.resize((SDXL_SIZE, SDXL_SIZE), Image.Resampling.LANCZOS)
     harmonization_time = time.time() - h_start
     clear_device_cache()
 

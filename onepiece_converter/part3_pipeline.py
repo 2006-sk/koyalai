@@ -5,12 +5,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 
 import torch
-from PIL import Image, ImageDraw, ImageEnhance
+from diffusers import StableDiffusionImg2ImgPipeline
+from PIL import Image, ImageDraw
 from transformers import CLIPVisionModelWithProjection
 
 from part1_pipeline import (
@@ -27,6 +29,7 @@ from part2_pipeline import (
     _download_ip_adapter_assets,
     run_part2,
 )
+from utils.color_grading import apply_arc_color_grading
 from utils.face_utils import FaceExtractor
 from utils.image_utils import load_image, resize_with_padding, save_metadata_json, timestamp_string
 from utils.lora_utils import apply_lora_if_available, download_onepiece_lora
@@ -84,6 +87,18 @@ def _save_five_panel(
     canvas.save(output_path)
 
 
+def _build_harmonizer(project_root: Path) -> StableDiffusionImg2ImgPipeline:
+    base_model_path = project_root / "models" / "base_model"
+    pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
+        base_model_path.as_posix(),
+        torch_dtype=DTYPE,
+        use_safetensors=True,
+        safety_checker=None,
+        requires_safety_checker=False,
+    )
+    return pipe.to(DEVICE)
+
+
 def run_part3(
     input_image: Path,
     project_root: Optional[Path] = None,
@@ -109,7 +124,7 @@ def run_part3(
     ip_scale_p3 = float(params.get("ip_adapter_scale", ip_scale_p3))
     print(f"[part3] Loaded best params: ip={ip_scale}, cn={cn_scale}, denoise={denoising}")
 
-    print("[part3] Step 1/6: Running Part 1 and Part 2 baselines...")
+    print("[part3] Step 1/8: Running Part 1 and Part 2 baselines...")
     if part1_result is None:
         part1 = run_part1(
             input_image=input_image,
@@ -121,7 +136,7 @@ def run_part3(
             seed=seed,
         )
     else:
-        print("[part3] Step 1/6: Reusing provided Part 1 result.")
+        print("[part3] Step 1/8: Reusing provided Part 1 result.")
         part1 = part1_result
     if part2_result is None:
         part2 = run_part2(
@@ -135,21 +150,21 @@ def run_part3(
             seed=seed,
         )
     else:
-        print("[part3] Step 1/6: Reusing provided Part 2 result.")
+        print("[part3] Step 1/8: Reusing provided Part 2 result.")
         part2 = part2_result
 
-    print("[part3] Step 2/6: Scene analysis...")
+    print("[part3] Step 2/8: Scene analysis...")
     original = resize_with_padding(load_image(input_image), size=(512, 512))
     scene_context = analyze_scene(original)
 
-    print("[part3] Step 3/6: Spatial person detection...")
+    print("[part3] Step 3/8: Spatial person detection...")
     person_map = detect_person_map(original)
     person_count = int(person_map["person_count"])
 
-    print("[part3] Step 4/6: Building dynamic prompt...")
+    print("[part3] Step 4/8: Building dynamic prompt...")
     positive_prompt, negative_prompt = build_dynamic_prompt(scene_context, person_count, arc=arc)
 
-    print("[part3] Step 5/6: Main generation with LoRA + ControlNet + IP-Adapter...")
+    print("[part3] Step 5/8: Main generation with LoRA + ControlNet + IP-Adapter...")
     lineart_pre = LineartPreprocessor(model_dir=models_dir / "lineart_annotators")
     lineart = lineart_pre.extract_lineart(original).convert("RGB")
 
@@ -191,11 +206,24 @@ def run_part3(
     )
     part3_pre = result.images[0].resize((512, 512), Image.Resampling.LANCZOS)
 
+    print("[part3] Step 6/8: Minimal harmonization pass...")
+    harmonizer = _build_harmonizer(root)
+    h_start = time.time()
+    h_result = harmonizer(
+        prompt=positive_prompt,
+        negative_prompt=negative_prompt,
+        image=part3_pre,
+        strength=0.10,
+        guidance_scale=6.0,
+        num_inference_steps=8,
+        generator=torch.Generator(device=gen_device).manual_seed(seed + 1),
+    )
+    harmonized = h_result.images[0].resize((512, 512), Image.Resampling.LANCZOS)
+    harmonization_time = time.time() - h_start
     clear_device_cache()
-    part3_final = ImageEnhance.Brightness(part3_pre).enhance(1.08)
-    part3_final = ImageEnhance.Contrast(part3_final).enhance(1.20)
-    part3_final = ImageEnhance.Color(part3_final).enhance(1.45)
-    part3_final = ImageEnhance.Sharpness(part3_final).enhance(1.30)
+
+    print("[part3] Step 7/8: Arc color grading...")
+    part3_final = apply_arc_color_grading(harmonized, arc=arc, reference_input=original)
 
     run_id = f"{input_image.stem}_{timestamp_string()}"
     part3_path = outputs_dir / f"{run_id}_part3_styled.png"
@@ -204,7 +232,7 @@ def run_part3(
     person_map_path = outputs_dir / f"{run_id}_person_map.png"
     metadata_path = outputs_dir / f"{run_id}_part3_metadata.json"
 
-    print("[part3] Step 6/6: Saving outputs...")
+    print("[part3] Step 8/8: Saving outputs...")
     part3_pre.save(part3_pre_path)
     part3_final.save(part3_path)
     save_person_map_visualization(original, person_map, person_map_path)
@@ -231,6 +259,7 @@ def run_part3(
         "lora_path": lora_path.as_posix() if lora_path else None,
         "lora_applied": lora_applied,
         "ip_adapter_weights": ip_file.as_posix(),
+        "harmonization_time_s": harmonization_time,
         "device": DEVICE,
         "dtype": str(DTYPE),
     }

@@ -73,28 +73,14 @@ def build_dynamic_prompt(
 ) -> tuple[str, str]:
     _ = scene_context, person_count, arc
     positive = (
-        "large expressive anime eyes, big bright eyes, "
-        "wide open eyes, detailed iris, "
-        "one piece character, defined facial features, strong jaw, "
-        "expressive anime face, oda style character face, "
-        "defined nose, oda style nose, manga nose, bold black outlines on face, "
-        "cel shaded skin tones, "
-        "masterpiece, best quality, official one piece art, eiichiro oda art style, "
-        "anime cel shading, bold black ink outlines, clean line art, "
-        "thick bold black outlines, heavy ink lines, high contrast anime shading, "
-        "vivid saturated colors, cel shaded with hard shadows, "
-        "detailed clothing folds, fabric texture, one piece character outfit, "
-        "detailed outdoor background, day lighting, atmospheric depth, vivid environment, "
-        "adventure mood, heroic energy, ocean breeze palette, "
-        "single character focus, hero shot, "
-        "8k, sharp focus, vibrant colors, professional illustration, manga panel quality"
+        "large anime eyes, detailed iris, one piece character, defined features, "
+        "cel shaded skin, masterpiece, eiichiro oda art style, anime cel shading, "
+        "bold outlines, adventure mood, best quality, sharp focus, vibrant colors"
     )
     negative = (
-        "photorealistic, realistic skin, soft gradients on face, blurry face, "
-        "3d render, smooth skin, photograph, western cartoon, chibi, deformed, "
-        "ugly, watermark, text, extra limbs, bad anatomy, low quality, "
-        "jpeg artifacts, noise, out of frame, small eyes, narrow eyes, "
-        "squinting, half closed eyes, tired eyes"
+        "photorealistic, realistic skin, soft gradients, blurry, 3d render, "
+        "photograph, deformed, ugly, watermark, text, extra limbs, bad anatomy, "
+        "low quality, noise, small eyes, narrow eyes"
     )
     return positive, negative
 

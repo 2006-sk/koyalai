@@ -59,10 +59,16 @@ def _load_best_params(models_dir: Path) -> Dict[str, float]:
                 "ip_adapter_scale": float(data.get("ip_adapter_scale", 0.5)),
                 "controlnet_scale": float(data.get("controlnet_scale", 0.7)),
                 "denoising_strength": float(data.get("denoising_strength", 0.55)),
+                "lora_scale": float(data.get("lora_scale", 0.4)),
             }
         except Exception as exc:
             print(f"[part3] Warning: failed reading best_params.json: {exc}")
-    return {"ip_adapter_scale": 0.5, "controlnet_scale": 0.7, "denoising_strength": 0.55}
+    return {
+        "ip_adapter_scale": 0.5,
+        "controlnet_scale": 0.7,
+        "denoising_strength": 0.55,
+        "lora_scale": 0.4,
+    }
 
 
 def _save_five_panel(
@@ -104,7 +110,7 @@ def run_part3(
     seed: int = 42,
     num_inference_steps: int = 25,
     guidance_scale: float = 7.5,
-    lora_scale: float = 0.35,
+    lora_scale: float = 0.4,
     ip_scale_p3: float = 0.55,
 ) -> Part3Result:
     root = (project_root or Path(__file__).resolve().parent).resolve()
@@ -467,7 +473,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--steps", type=int, default=25)
     parser.add_argument("--guidance", type=float, default=7.5)
-    parser.add_argument("--lora-scale", type=float, default=0.35)
+    parser.add_argument("--lora-scale", type=float, default=0.4)
     parser.add_argument("--ip-scale-p3", type=float, default=0.55)
     parser.add_argument("--ip-search", action="store_true")
     return parser.parse_args()

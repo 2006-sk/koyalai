@@ -80,15 +80,20 @@ def build_dynamic_prompt(
         "coherent environment, vivid background"
     )
     arc_desc = ARC_DESCRIPTORS.get(arc, ARC_DESCRIPTORS["adventure"])
+    face_desc = (
+        "female character, feminine facial features, female anime face, "
+        "small delicate nose, soft feminine jaw, female one piece character"
+    )
     multi_desc = (
         "multiple characters, each with distinct appearance"
         if person_count > 1
         else "single character focus"
     )
-    positive = f"{base}, {scene_desc}, {arc_desc}, {multi_desc}"
+    positive = f"{base}, {scene_desc}, {arc_desc}, {face_desc}, {multi_desc}"
     negative = (
         "realistic, photorealistic, 3d, horror, scary, gradient skin, blurry, deformed, "
-        "watermark, ugly, extra limbs, bad anatomy"
+        "watermark, ugly, extra limbs, bad anatomy, male face, masculine features, "
+        "male nose, stub nose, triangle nose, male jaw, masculine"
     )
     return positive, negative
 

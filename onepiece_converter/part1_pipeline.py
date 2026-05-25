@@ -27,6 +27,23 @@ from utils.image_utils import (
 from utils.preprocessor import LineartPreprocessor
 
 
+def get_available_variant(model_path, filename: str = "diffusion_pytorch_model") -> Optional[str]:
+    """Detect whether an fp16 variant is present on disk for a model component."""
+    p = Path(model_path)
+    if (p / f"{filename}.fp16.safetensors").exists():
+        return "fp16"
+    if (p / f"{filename}.safetensors").exists():
+        return None
+    # Also walk one level into common subfolders (unet/vae/text_encoder).
+    for sub in ("unet", "vae", "text_encoder"):
+        sp = p / sub
+        if (sp / f"{filename}.fp16.safetensors").exists():
+            return "fp16"
+        if (sp / f"{filename}.safetensors").exists():
+            return None
+    return None
+
+
 def get_device() -> tuple[str, torch.dtype]:
     if torch.cuda.is_available():
         device = "cuda"
@@ -190,25 +207,44 @@ def _load_pipeline_with_dtype(
     """Load ControlNet pipeline for one dtype attempt."""
     print(f"[pipeline] Loading ControlNet with dtype={dtype}...")
     controlnet_start = time.time()
-    controlnet = ControlNetModel.from_pretrained(
-        controlnet_path.as_posix(),
-        torch_dtype=dtype,
-        use_safetensors=True,
-    )
+    try:
+        controlnet = ControlNetModel.from_pretrained(
+            str(controlnet_path),
+            torch_dtype=dtype,
+            variant="fp16",
+            use_safetensors=True,
+        )
+    except Exception:
+        controlnet = ControlNetModel.from_pretrained(
+            str(controlnet_path),
+            torch_dtype=dtype,
+            use_safetensors=True,
+        )
     controlnet_elapsed = time.time() - controlnet_start
     if diagnostic:
         print_component_load_info("ControlNet", controlnet, controlnet_elapsed)
 
     print(f"[pipeline] Loading base model with dtype={dtype}...")
     base_start = time.time()
-    pipe = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(
-        base_model_path.as_posix(),
-        controlnet=controlnet,
-        torch_dtype=dtype,
-        use_safetensors=True,
-        safety_checker=None,
-        requires_safety_checker=False,
-    )
+    try:
+        pipe = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(
+            str(base_model_path),
+            controlnet=controlnet,
+            torch_dtype=dtype,
+            variant="fp16",
+            use_safetensors=True,
+            safety_checker=None,
+            requires_safety_checker=False,
+        )
+    except Exception:
+        pipe = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(
+            str(base_model_path),
+            controlnet=controlnet,
+            torch_dtype=dtype,
+            use_safetensors=True,
+            safety_checker=None,
+            requires_safety_checker=False,
+        )
     base_elapsed = time.time() - base_start
     if diagnostic:
         print_component_load_info("UNet", pipe.unet, base_elapsed)

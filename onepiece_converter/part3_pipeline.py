@@ -56,18 +56,18 @@ def _load_best_params(models_dir: Path) -> Dict[str, float]:
         try:
             data = json.loads(best_path.read_text(encoding="utf-8"))
             return {
-                "ip_adapter_scale": float(data.get("ip_adapter_scale", 0.5)),
-                "controlnet_scale": float(data.get("controlnet_scale", 0.7)),
+                "ip_adapter_scale": float(data.get("ip_adapter_scale", 0.45)),
+                "controlnet_scale": float(data.get("controlnet_scale", 0.65)),
                 "denoising_strength": float(data.get("denoising_strength", 0.55)),
-                "lora_scale": float(data.get("lora_scale", 0.4)),
+                "lora_scale": float(data.get("lora_scale", 0.45)),
             }
         except Exception as exc:
             print(f"[part3] Warning: failed reading best_params.json: {exc}")
     return {
-        "ip_adapter_scale": 0.5,
-        "controlnet_scale": 0.7,
+        "ip_adapter_scale": 0.45,
+        "controlnet_scale": 0.65,
         "denoising_strength": 0.55,
-        "lora_scale": 0.4,
+        "lora_scale": 0.45,
     }
 
 
@@ -110,8 +110,8 @@ def run_part3(
     seed: int = 42,
     num_inference_steps: int = 25,
     guidance_scale: float = 7.5,
-    lora_scale: float = 0.4,
-    ip_scale_p3: float = 0.55,
+    lora_scale: float = 0.45,
+    ip_scale_p3: float = 0.45,
 ) -> Part3Result:
     root = (project_root or Path(__file__).resolve().parent).resolve()
     models_dir = root / "models"
@@ -244,7 +244,7 @@ def run_part3(
         prompt=positive_prompt,
         negative_prompt=negative_prompt,
         image=part3_pre,
-        strength=0.15,
+        strength=0.08,
         guidance_scale=6.5,
         num_inference_steps=12,
         generator=torch.Generator(device=gen_device).manual_seed(seed + 1),
@@ -270,19 +270,17 @@ def run_part3(
     part3_eye_enhanced = part3_final.copy()
     gray = cv2.cvtColor(np.array(part3_final.convert("RGB")), cv2.COLOR_RGB2GRAY)
     face_detector = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-    eye_detector = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_eye.xml")
-    eye_fallback = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_eye_tree_eyeglasses.xml")
     faces = face_detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(30, 30))
     for fx, fy, fw, fh in faces:
-        face_gray = gray[fy : fy + fh, fx : fx + fw]
-        eyes = eye_detector.detectMultiScale(face_gray, scaleFactor=1.1, minNeighbors=3, minSize=(10, 10))
-        if len(eyes) == 0:
-            eyes = eye_fallback.detectMultiScale(face_gray, scaleFactor=1.1, minNeighbors=3, minSize=(10, 10))
-        for ex, ey, ew, eh in eyes:
-            eye_cx = fx + ex + (ew / 2.0)
-            eye_cy = fy + ey + (eh / 2.0)
+        eye_centers = (
+            (fx + fw * 0.35, fy + fh * 0.40),
+            (fx + fw * 0.65, fy + fh * 0.40),
+        )
+        ew = int(fw * 0.20)
+        eh = int(fh * 0.12)
+        for eye_cx, eye_cy in eye_centers:
             exp_w = max(1, int(ew * 2.2))
-            exp_h = max(1, int(eh * 2.8))
+            exp_h = max(1, int(eh * 3.0))
             x1 = max(0, int(eye_cx - exp_w / 2.0))
             y1 = max(0, int(eye_cy - exp_h / 2.0))
             x2 = min(512, int(eye_cx + exp_w / 2.0))
@@ -292,13 +290,10 @@ def run_part3(
             region_w = x2 - x1
             region_h = y2 - y1
             eye_patch = part3_final.crop((x1, y1, x2, y2)).resize((128, 128), Image.Resampling.LANCZOS)
-            eye_patch = ImageEnhance.Contrast(eye_patch).enhance(1.4)
+            eye_patch = ImageEnhance.Contrast(eye_patch).enhance(1.8)
             eye_patch = ImageEnhance.Color(eye_patch).enhance(1.3)
-            eye_patch = ImageEnhance.Sharpness(eye_patch).enhance(2.0).convert("RGBA")
-            draw = ImageDraw.Draw(eye_patch, "RGBA")
-            draw.ellipse([80, 8, 96, 22], fill=(255, 255, 255, 200))
-            draw.ellipse([20, 85, 30, 95], fill=(255, 255, 255, 120))
-            eye_patch = eye_patch.convert("RGB").resize((region_w, region_h), Image.Resampling.LANCZOS)
+            eye_patch = ImageEnhance.Sharpness(eye_patch).enhance(3.0)
+            eye_patch = eye_patch.resize((region_w, region_h), Image.Resampling.LANCZOS)
 
             mask = np.zeros((region_h, region_w), dtype=np.uint8)
             cv2.ellipse(
@@ -473,8 +468,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--steps", type=int, default=25)
     parser.add_argument("--guidance", type=float, default=7.5)
-    parser.add_argument("--lora-scale", type=float, default=0.4)
-    parser.add_argument("--ip-scale-p3", type=float, default=0.55)
+    parser.add_argument("--lora-scale", type=float, default=0.45)
+    parser.add_argument("--ip-scale-p3", type=float, default=0.45)
     parser.add_argument("--ip-search", action="store_true")
     return parser.parse_args()
 

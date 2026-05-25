@@ -73,7 +73,10 @@ def build_dynamic_prompt(
 ) -> tuple[str, str]:
     base = (
         "one piece anime style, eiichiro oda, shounen manga, "
-        "bold black outlines, flat cel shading, bright colors"
+        "bold black outlines, flat cel shading, bright colors, "
+        "thick bold black outlines, heavy ink lines, strong line art, "
+        "high contrast anime shading, vivid saturated colors, "
+        "cel shaded with hard shadows"
     )
     scene_desc = (
         f"{scene_context['scene_type']} scene, {scene_context['time_of_day']} lighting, "

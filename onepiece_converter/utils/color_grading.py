@@ -33,8 +33,12 @@ def apply_arc_color_grading(
 ) -> Image.Image:
     palette = ARC_PALETTES.get(arc, ARC_PALETTES["adventure"])
     graded = image.convert("RGB")
-    graded = ImageEnhance.Color(graded).enhance(1.25)
-    graded = ImageEnhance.Contrast(graded).enhance(1.10)
+    brightness = 1.05 if arc == "adventure" else 1.0
+    saturation = 1.45 if arc == "adventure" else 1.25
+    contrast = 1.25 if arc == "adventure" else 1.10
+    graded = ImageEnhance.Brightness(graded).enhance(brightness)
+    graded = ImageEnhance.Color(graded).enhance(saturation)
+    graded = ImageEnhance.Contrast(graded).enhance(contrast)
     graded = _apply_temperature_shift(graded, palette)
 
     if reference_input is not None:

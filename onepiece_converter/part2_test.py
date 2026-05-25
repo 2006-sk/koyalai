@@ -17,9 +17,9 @@ import psutil
 import torch
 from deepface import DeepFace
 from PIL import Image
-from transformers import CLIPModel, CLIPProcessor, CLIPVisionModelWithProjection
+from transformers import CLIPModel, CLIPProcessor
 
-from part1_pipeline import run_part1
+from part1_pipeline import get_canny_image, run_part1
 from part2_pipeline import _build_part2_pipeline, _download_ip_adapter_assets, run_part2
 from utils.face_utils import FaceExtractor
 from utils.identity_metrics import identity_improvement
@@ -332,19 +332,13 @@ class Part2Tester:
         pipe, _device, _dtype = _build_part2_pipeline(PROJECT_ROOT)
         models_dir = PROJECT_ROOT / "models"
         _ip_file, _enc = _download_ip_adapter_assets(models_dir)
-        image_encoder = CLIPVisionModelWithProjection.from_pretrained(
-            "h94/IP-Adapter",
-            subfolder="models/image_encoder",
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-        ).to("cuda" if torch.cuda.is_available() else "cpu")
-        pipe.image_encoder = image_encoder
         pipe.load_ip_adapter(
             "h94/IP-Adapter",
-            subfolder="models",
-            weight_name="ip-adapter_sd15.bin",
-            image_encoder_folder=None,
+            subfolder="sdxl_models",
+            weight_name="ip-adapter_sdxl.bin",
+            image_encoder_folder="models/image_encoder",
         )
-        pipe.vae.enable_slicing()
+        pipe.set_ip_adapter_scale(0.4)
         return pipe
 
     def test_hyperparameter_search(
@@ -377,10 +371,10 @@ class Part2Tester:
             self.add_result(name, False, "FAIL", f"Failed to initialize reusable pipeline: {exc}")
             return
 
-        input_img = resize_with_padding(load_image(target), size=(512, 512))
-        lineart_img = Image.open(run_part1(target, project_root=PROJECT_ROOT).lineart_path).convert("RGB")
+        input_img = resize_with_padding(load_image(target), size=(768, 768))
+        lineart_img = get_canny_image(input_img)
         input_face = self.face_extractor.extract_face_crop(input_img).face_crop
-        face_cond = input_face if input_face is not None else input_img
+        face_cond = input_face if input_face is not None else input_img.resize((512, 512), Image.Resampling.LANCZOS)
 
         output_dir = PROJECT_ROOT / "outputs" / "hyperparam_search"
         output_dir.mkdir(parents=True, exist_ok=True)

@@ -14,16 +14,14 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 MODELS_DIR = PROJECT_ROOT / "models"
 
 MODEL_TARGETS: Dict[str, str] = {
-    # Anything-v5 compatible repo in diffusers format.
-    "base_model": "stablediffusionapi/anything-v5",
-    "controlnet_lineart": "lllyasviel/control_v11p_sd15_lineart",
-    "lineart_annotators": "lllyasviel/Annotators",
+    "sdxl_base": "cagliostrolab/animagine-xl-4.0",
+    "sdxl_controlnet": "xinsir/controlnet-canny-sdxl-1.0",
 }
 
 MAX_RETRIES = 3
 
-IP_ADAPTER_DIR = MODELS_DIR / "ip_adapter"
-IP_ADAPTER_ENCODER_DIR = MODELS_DIR / "ip_adapter_encoder"
+IP_ADAPTER_DIR = MODELS_DIR / "ip_adapter_sdxl"
+IP_ADAPTER_ENCODER_DIR = MODELS_DIR / "image_encoder"
 
 
 def download_with_retry(repo_id: str, local_dir: Path) -> None:
@@ -75,13 +73,12 @@ def download_file_with_retry(repo_id: str, filename: str, local_dir: Path) -> Pa
 
 def download_ip_adapter_assets() -> None:
     """Download Part 2 IP-Adapter and encoder assets."""
-    # Only the requested IP-Adapter checkpoint.
     src_file = download_file_with_retry(
         repo_id="h94/IP-Adapter",
-        filename="models/ip-adapter_sd15.bin",
+        filename="sdxl_models/ip-adapter_sdxl.bin",
         local_dir=IP_ADAPTER_DIR,
     )
-    target_file = IP_ADAPTER_DIR / "ip-adapter_sd15.bin"
+    target_file = IP_ADAPTER_DIR / "ip-adapter_sdxl.bin"
     if src_file != target_file:
         target_file.write_bytes(src_file.read_bytes())
 

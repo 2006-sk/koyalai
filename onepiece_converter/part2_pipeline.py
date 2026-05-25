@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Part 2 pipeline: ControlNet structure + IP-Adapter identity conditioning."""
+"""Part 2 pipeline: SDXL ControlNet + IP-Adapter identity conditioning."""
 
 from __future__ import annotations
 
@@ -11,16 +11,15 @@ from typing import Dict, Optional
 
 from huggingface_hub import hf_hub_download
 import torch
-from diffusers import ControlNetModel, StableDiffusionControlNetImg2ImgPipeline
 from PIL import Image
-from transformers import CLIPVisionModelWithProjection
 
 from part1_pipeline import (
     DEFAULT_CONTROLNET_SCALE,
     DEFAULT_STRENGTH,
     DEVICE,
-    DTYPE,
+    build_pipeline,
     clear_device_cache,
+    get_canny_image,
     get_input_image_path,
     run_part1,
 )
@@ -32,34 +31,19 @@ from utils.image_utils import (
     save_metadata_json,
     timestamp_string,
 )
-from utils.preprocessor import LineartPreprocessor
 
 
 IP_ADAPTER_REPO = "h94/IP-Adapter"
-IP_ADAPTER_FILE = "models/ip-adapter_sd15.bin"
-CLIP_ENCODER_REPO = "openai/clip-vit-large-patch14"
-CLIP_ENCODER_FILES = [
-    "config.json",
-    "model.safetensors",
-    "preprocessor_config.json",
-    "tokenizer.json",
-    "tokenizer_config.json",
-    "vocab.json",
-    "merges.txt",
-    "special_tokens_map.json",
-]
+IP_ADAPTER_FILE = "sdxl_models/ip-adapter_sdxl.bin"
 
 PART2_PROMPT = (
-    "one piece anime, eiichiro oda style, shounen manga, "
-    "clean flat skin tone, bright warm colors, bold black outlines, "
-    "friendly neutral expression, mouth closed, clean face, "
-    "bright white background, red shirt character, adventure manga"
+    "masterpiece, best quality, anime style, one piece, eiichiro oda art style, "
+    "bold black outlines, flat cel shading, vibrant colors, sharp details, "
+    "friendly neutral expression, adventure manga panel"
 )
 PART2_NEGATIVE_PROMPT = (
-    "angry, teeth, open mouth, dark skin, heavy shadows, "
-    "scary, horror, menacing, realistic, photorealistic, "
-    "gradient shading, wrinkles, deformed, blurry, ugly, "
-    "extra objects on document, watermark"
+    "worst quality, low quality, jpeg artifacts, blurry, ugly, deformed, extra limbs, "
+    "bad anatomy, realistic photo, 3d render, watermark, signature, gradient shading, heavy shadows"
 )
 
 
@@ -76,60 +60,22 @@ class Part2Result:
 
 
 def _download_ip_adapter_assets(models_dir: Path) -> tuple[Path, Path]:
-    ip_dir = models_dir / "ip_adapter"
+    ip_dir = models_dir / "ip_adapter_sdxl"
     ip_dir.mkdir(parents=True, exist_ok=True)
-    encoder_dir = models_dir / "ip_adapter_encoder"
-    encoder_dir.mkdir(parents=True, exist_ok=True)
-
-    src_ip = Path(
+    ip_path = Path(
         hf_hub_download(
             repo_id=IP_ADAPTER_REPO,
             filename=IP_ADAPTER_FILE,
             local_dir=ip_dir.as_posix(),
         )
     )
-    target_ip = ip_dir / "ip-adapter_sd15.bin"
-    if src_ip != target_ip:
-        target_ip.write_bytes(src_ip.read_bytes())
-
-    for filename in CLIP_ENCODER_FILES:
-        try:
-            hf_hub_download(
-                repo_id=CLIP_ENCODER_REPO,
-                filename=filename,
-                local_dir=encoder_dir.as_posix(),
-            )
-        except Exception as exc:
-            print(f"[part2] Warning: failed to download encoder file {filename}: {exc}")
-    return target_ip, encoder_dir
+    encoder_dir = models_dir / "image_encoder"
+    encoder_dir.mkdir(parents=True, exist_ok=True)
+    return ip_path, encoder_dir
 
 
-def _build_part2_pipeline(project_root: Path) -> tuple[StableDiffusionControlNetImg2ImgPipeline, str, torch.dtype]:
-    """Build a Part 2 pipeline without pre-IP-Adapter slicing hooks."""
-    model_root = project_root / "models"
-    base_model_path = model_root / "base_model"
-    controlnet_path = model_root / "controlnet_lineart"
-    if not base_model_path.exists():
-        raise FileNotFoundError(f"Missing base model directory: {base_model_path}")
-    if not controlnet_path.exists():
-        raise FileNotFoundError(f"Missing controlnet directory: {controlnet_path}")
-
-    controlnet = ControlNetModel.from_pretrained(
-        controlnet_path.as_posix(),
-        torch_dtype=DTYPE,
-        use_safetensors=True,
-    )
-    pipe = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(
-        base_model_path.as_posix(),
-        controlnet=controlnet,
-        torch_dtype=DTYPE,
-        use_safetensors=True,
-        safety_checker=None,
-        requires_safety_checker=False,
-    )
-    # IMPORTANT: do not enable attention/vae slicing before IP-Adapter load.
-    pipe = pipe.to(DEVICE)
-    return pipe, DEVICE, DTYPE
+def _build_part2_pipeline(project_root: Path):
+    return build_pipeline(project_root, device_preference="auto")
 
 
 def _save_four_panel(
@@ -156,9 +102,9 @@ def run_part2(
     project_root: Optional[Path] = None,
     strength: float = DEFAULT_STRENGTH,
     controlnet_scale: float = DEFAULT_CONTROLNET_SCALE,
-    ip_adapter_scale: float = 0.6,
-    guidance_scale: float = 7.5,
-    num_inference_steps: int = 28,
+    ip_adapter_scale: float = 0.4,
+    guidance_scale: float = 7.0,
+    num_inference_steps: int = 25,
     seed: int = 42,
 ) -> Part2Result:
     root = (project_root or Path(__file__).resolve().parent).resolve()
@@ -177,15 +123,16 @@ def run_part2(
         seed=seed,
     )
 
-    print("[part2] Stage 2/7: Loading input and lineart...")
+    print("[part2] Stage 2/7: Loading input and Canny conditioning...")
     original_img = load_image(input_image)
-    original_512 = resize_with_padding(original_img, size=(512, 512))
-    lineart_pre = LineartPreprocessor(model_dir=models_dir / "lineart_annotators")
-    lineart_img = lineart_pre.extract_lineart(original_512).convert("RGB")
+    original_768 = resize_with_padding(original_img, size=(768, 768))
+    original_512 = original_768.resize((512, 512), Image.Resampling.LANCZOS)
+    canny_768 = get_canny_image(original_768)
+    canny_512 = canny_768.resize((512, 512), Image.Resampling.LANCZOS)
 
     print("[part2] Stage 3/7: Detecting face for identity conditioning...")
     extractor = FaceExtractor()
-    face_result = extractor.extract_face_crop(original_512, target_size=256)
+    face_result = extractor.extract_face_crop(original_512, target_size=512)
     no_face_fallback = face_result.face_crop is None
     if no_face_fallback:
         print("No face detected — running without identity preservation")
@@ -197,26 +144,18 @@ def run_part2(
         save_face_crop(face_result.face_crop, face_crop_path)
 
     print("[part2] Stage 4/7: Loading ControlNet + IP-Adapter assets...")
-    ip_file, _encoder_dir = _download_ip_adapter_assets(models_dir)
+    ip_file, encoder_dir = _download_ip_adapter_assets(models_dir)
     pipe, device, dtype = _build_part2_pipeline(root)
 
     print("[part2] Stage 5/7: Attaching IP-Adapter...")
     if not no_face_fallback:
-        image_encoder = CLIPVisionModelWithProjection.from_pretrained(
-            "h94/IP-Adapter",
-            subfolder="models/image_encoder",
-            torch_dtype=torch.float16,
-        ).to(DEVICE)
-        pipe.image_encoder = image_encoder
         pipe.load_ip_adapter(
             "h94/IP-Adapter",
-            subfolder="models",
-            weight_name="ip-adapter_sd15.bin",
-            image_encoder_folder=None,
+            subfolder="sdxl_models",
+            weight_name="ip-adapter_sdxl.bin",
+            image_encoder_folder="models/image_encoder",
         )
         pipe.set_ip_adapter_scale(ip_adapter_scale)
-        # Only after IP-Adapter is loaded.
-        pipe.vae.enable_slicing()
 
     print("[part2] Stage 6/7: Generating Part 2 output...")
     if DEVICE == "cuda" and torch.cuda.is_available():
@@ -233,8 +172,8 @@ def run_part2(
         result = pipe(
             prompt=PART2_PROMPT,
             negative_prompt=PART2_NEGATIVE_PROMPT,
-            image=original_512,
-            control_image=lineart_img,
+            image=original_768,
+            control_image=canny_768,
             ip_adapter_image=face_result.face_crop,
             strength=strength,
             controlnet_conditioning_scale=controlnet_scale,
@@ -248,19 +187,19 @@ def run_part2(
 
     print("[part2] Stage 7/7: Saving Part 2 outputs...")
     original_path = outputs_dir / f"{run_id}_part2_original.png"
-    lineart_path = outputs_dir / f"{run_id}_part2_lineart.png"
+    lineart_path = outputs_dir / f"{run_id}_part2_canny.png"
     part1_path = outputs_dir / f"{run_id}_part1_baseline.png"
     part2_path = outputs_dir / f"{run_id}_part2_styled.png"
     metadata_path = outputs_dir / f"{run_id}_part2_metadata.json"
 
     part1_img = load_image(part1_result.output_path).resize((512, 512), Image.Resampling.LANCZOS)
     save_image_with_metadata(original_512, original_path, {"stage": "part2"})
-    save_image_with_metadata(lineart_img, lineart_path, {"stage": "part2"})
+    save_image_with_metadata(canny_512, lineart_path, {"stage": "part2"})
     save_image_with_metadata(part1_img, part1_path, {"stage": "part2"})
     save_image_with_metadata(part2_img, part2_path, {"stage": "part2"})
     comparison_path = _save_four_panel(
         original=original_512,
-        lineart=lineart_img,
+        lineart=canny_512,
         part1_img=part1_img,
         part2_img=part2_img,
         output_dir=outputs_dir,
@@ -283,8 +222,9 @@ def run_part2(
         "face_laplacian_variance": face_result.laplacian_variance,
         "no_face_fallback": no_face_fallback,
         "ip_adapter_weights": ip_file.as_posix(),
-        "ip_adapter_encoder_dir": "h94/IP-Adapter/models/image_encoder",
+        "ip_adapter_encoder_dir": encoder_dir.as_posix(),
         "generation_time_s": gen_elapsed,
+        "conditioning_type": "canny",
     }
     save_metadata_json(metadata, metadata_path)
 

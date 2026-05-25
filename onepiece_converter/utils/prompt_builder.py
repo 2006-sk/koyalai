@@ -71,35 +71,39 @@ def build_dynamic_prompt(
     person_count: int,
     arc: str = "adventure",
 ) -> tuple[str, str]:
-    base = (
-        "one piece anime style, eiichiro oda, shounen manga, "
-        "bold black outlines, flat cel shading, bright colors, "
-        "thick bold black outlines, heavy ink lines, strong line art, "
-        "high contrast anime shading, vivid saturated colors, "
-        "cel shaded with hard shadows"
+    eyes = (
+        "large expressive anime eyes, big bright eyes, thick dark eyelashes, "
+        "wide open eyes, detailed iris, nami eyes, robin eyes, "
     )
+    face = (
+        "female character, feminine facial features, female one piece character, "
+        "defined nose, oda style nose, manga nose, feminine but defined facial "
+        "features, strong feminine jaw, bold black outlines on face, "
+        "cel shaded skin tones, "
+    )
+    style_core = (
+        "masterpiece, best quality, official one piece art, eiichiro oda art style, "
+        "anime cel shading, bold black ink outlines, clean line art, "
+        "thick bold black outlines, heavy ink lines, high contrast anime shading, "
+        "vivid saturated colors, cel shaded with hard shadows, "
+    )
+    body = "detailed clothing folds, fabric texture, one piece character outfit, "
     scene_desc = (
-        f"{scene_context['scene_type']} scene, {scene_context['time_of_day']} lighting, "
-        "coherent environment, vivid background"
+        f"detailed {scene_context['scene_type']} background, "
+        f"{scene_context['time_of_day']} lighting, "
+        "atmospheric depth, vivid environment, "
     )
     arc_desc = ARC_DESCRIPTORS.get(arc, ARC_DESCRIPTORS["adventure"])
-    face_desc = (
-        "female character, feminine facial features, female anime face, "
-        "small delicate nose, soft feminine jaw, female one piece character, "
-        "large expressive anime eyes, big bright eyes, thick dark eyelashes, "
-        "detailed iris, nami eyes, robin eyes, wide open eyes"
-    )
-    multi_desc = (
-        "multiple characters, each with distinct appearance"
-        if person_count > 1
-        else "single character focus"
-    )
-    positive = f"{base}, {scene_desc}, {arc_desc}, {face_desc}, {multi_desc}"
+    person_desc = "multiple characters, ensemble cast" if person_count > 1 else "single character focus, hero shot"
+    quality_tail = "8k, sharp focus, vibrant colors, professional illustration, manga panel quality"
+    positive = f"{eyes}{face}{style_core}{body}{scene_desc}{arc_desc}, {person_desc}, {quality_tail}"
     negative = (
-        "realistic, photorealistic, 3d, horror, scary, gradient skin, blurry, deformed, "
-        "watermark, ugly, extra limbs, bad anatomy, male face, masculine features, "
-        "male nose, stub nose, triangle nose, male jaw, masculine, small eyes, "
-        "narrow eyes, squinting, half closed eyes, no eyelashes, tired eyes"
+        "photorealistic, realistic skin, soft gradients on face, blurry face, "
+        "3d render, smooth skin, photograph, western cartoon, chibi, deformed, "
+        "ugly, watermark, text, extra limbs, bad anatomy, low quality, "
+        "jpeg artifacts, noise, out of frame, small eyes, narrow eyes, "
+        "squinting, half closed eyes, no eyelashes, tired eyes, "
+        "male face, masculine features, stub nose, triangle nose"
     )
     return positive, negative
 

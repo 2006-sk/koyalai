@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
@@ -13,7 +12,6 @@ from typing import Dict, Optional
 import cv2
 import numpy as np
 import torch
-from diffusers import StableDiffusionImg2ImgPipeline
 from PIL import Image, ImageDraw, ImageEnhance
 from transformers import CLIPVisionModelWithProjection
 
@@ -57,7 +55,7 @@ def _load_best_params(models_dir: Path) -> Dict[str, float]:
             return {
                 "ip_adapter_scale": float(data.get("ip_adapter_scale", 0.45)),
                 "controlnet_scale": float(data.get("controlnet_scale", 0.65)),
-                "denoising_strength": float(data.get("denoising_strength", 0.55)),
+                "denoising_strength": float(data.get("denoising_strength", 0.65)),
                 "lora_scale": float(data.get("lora_scale", 0.45)),
             }
         except Exception as exc:
@@ -65,7 +63,7 @@ def _load_best_params(models_dir: Path) -> Dict[str, float]:
     return {
         "ip_adapter_scale": 0.45,
         "controlnet_scale": 0.65,
-        "denoising_strength": 0.55,
+        "denoising_strength": 0.65,
         "lora_scale": 0.45,
     }
 
@@ -86,18 +84,6 @@ def _save_five_panel(
     canvas.paste(part3_img, (original.width * 4, 0))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(output_path)
-
-
-def _build_harmonizer(project_root: Path):
-    base_model_path = project_root / "models" / "base_model"
-    pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
-        base_model_path.as_posix(),
-        torch_dtype=DTYPE,
-        use_safetensors=True,
-        safety_checker=None,
-        requires_safety_checker=False,
-    )
-    return pipe.to(DEVICE)
 
 
 def run_part3(
@@ -123,7 +109,7 @@ def run_part3(
     denoising = params["denoising_strength"]
     print(f"[part3] Loaded best params: ip={ip_scale}, cn={cn_scale}, denoise={denoising}")
 
-    print("[part3] Step 1/8: Running Part 1 and Part 2 baselines...")
+    print("[part3] Step 1/7: Running Part 1 and Part 2 baselines...")
     if part1_result is None:
         part1 = run_part1(
             input_image=input_image,
@@ -135,7 +121,7 @@ def run_part3(
             seed=seed,
         )
     else:
-        print("[part3] Step 1/8: Reusing provided Part 1 result.")
+        print("[part3] Step 1/7: Reusing provided Part 1 result.")
         part1 = part1_result
     if part2_result is None:
         part2 = run_part2(
@@ -149,29 +135,21 @@ def run_part3(
             seed=seed,
         )
     else:
-        print("[part3] Step 1/8: Reusing provided Part 2 result.")
+        print("[part3] Step 1/7: Reusing provided Part 2 result.")
         part2 = part2_result
 
-    print("[part3] Step 2/8: Scene analysis...")
+    print("[part3] Step 2/7: Scene analysis...")
     original = resize_with_padding(load_image(input_image), size=(512, 512))
     scene_context = analyze_scene(original)
 
-    print("[part3] Step 3/8: Spatial person detection...")
+    print("[part3] Step 3/7: Spatial person detection...")
     person_map = detect_person_map(original)
     person_count = int(person_map["person_count"])
 
-    print("[part3] Step 4/8: Building dynamic prompt...")
+    print("[part3] Step 4/7: Building dynamic prompt...")
     positive_prompt, negative_prompt = build_dynamic_prompt(scene_context, person_count, arc=arc)
-    positive_prompt = (
-        f"{positive_prompt}, bold black outlines on face, cel shaded skin, anime eyes, "
-        "defined jawline, one piece character face, eiichiro oda facial features"
-    )
-    negative_prompt = (
-        f"{negative_prompt}, photorealistic face, soft face, blurry face, 3d face, "
-        "realistic skin, smooth gradient skin, photograph"
-    )
 
-    print("[part3] Step 5/8: Main generation with LoRA + ControlNet + IP-Adapter...")
+    print("[part3] Step 5/7: Main generation with LoRA + ControlNet + IP-Adapter...")
     lineart_pre = LineartPreprocessor(model_dir=models_dir / "lineart_annotators")
     lineart = lineart_pre.extract_lineart(original).convert("RGB")
 
@@ -235,24 +213,9 @@ def run_part3(
         mask_pil = Image.fromarray(mask).convert("L")
         part3_pre.paste(face_patch, (x1, y1), mask_pil)
 
-    print("[part3] Step 6/8: Harmonization pass...")
-    harmonizer = _build_harmonizer(root)
-    _ = apply_lora_if_available(harmonizer, lora_path, scale=0.2)
-    h_start = time.time()
-    h_result = harmonizer(
-        prompt=positive_prompt,
-        negative_prompt=negative_prompt,
-        image=part3_pre,
-        strength=0.08,
-        guidance_scale=6.5,
-        num_inference_steps=12,
-        generator=torch.Generator(device=gen_device).manual_seed(seed + 1),
-    )
-    harmonized = h_result.images[0].resize((512, 512), Image.Resampling.LANCZOS)
-    harmonization_time = time.time() - h_start
     clear_device_cache()
 
-    print("[part3] Step 7/8: Light color enhancement...")
+    print("[part3] Step 6/7: Light color enhancement...")
     part3_final = ImageEnhance.Contrast(part3_pre).enhance(1.08)
     part3_final = ImageEnhance.Color(part3_final).enhance(1.10)
 
@@ -263,7 +226,7 @@ def run_part3(
     person_map_path = outputs_dir / f"{run_id}_person_map.png"
     metadata_path = outputs_dir / f"{run_id}_part3_metadata.json"
 
-    print("[part3] Step 8/8: Saving outputs...")
+    print("[part3] Step 7/7: Saving outputs...")
     part3_pre.save(part3_pre_path)
     part3_final.save(part3_path)
     save_person_map_visualization(original, person_map, person_map_path)
@@ -290,7 +253,6 @@ def run_part3(
         "lora_path": lora_path.as_posix() if lora_path else None,
         "lora_applied": lora_applied,
         "ip_adapter_weights": ip_file.as_posix(),
-        "harmonization_time_s": harmonization_time,
         "device": DEVICE,
         "dtype": str(DTYPE),
     }

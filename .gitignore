@@ -1,0 +1,10 @@
+.DS_Store
+__pycache__/
+*.pyc
+
+# Local model weights are too large for normal GitHub push
+onepiece_converter/models/
+
+# Generated artifacts
+onepiece_converter/outputs/
+

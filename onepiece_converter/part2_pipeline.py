@@ -222,14 +222,15 @@ def run_part2(
     print("[part2] Stage 5/7: Attaching IP-Adapter...")
     if not no_face_fallback:
         image_encoder = CLIPVisionModelWithProjection.from_pretrained(
-            encoder_dir.as_posix(),
+            "h94/IP-Adapter",
+            subfolder="models/image_encoder",
             torch_dtype=DTYPE,
         ).to(DEVICE)
         pipe.image_encoder = image_encoder
         pipe.load_ip_adapter(
-            ip_file.parent.as_posix(),
-            subfolder="",
-            weight_name=ip_file.name,
+            "h94/IP-Adapter",
+            subfolder="models",
+            weight_name="ip-adapter_sd15.bin",
             image_encoder_folder=None,
         )
         pipe.set_ip_adapter_scale(ip_adapter_scale)

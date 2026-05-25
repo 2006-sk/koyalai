@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 
+import numpy as np
 import torch
 from diffusers import (
     StableDiffusionXLImg2ImgPipeline,
@@ -200,9 +201,17 @@ def run_part3(
                 weight_name="pytorch_lora_weights.safetensors",
             )
             try:
-                pipe.set_adapters(["default"], adapter_weights=[0.7])
-            except Exception:
-                pipe.fuse_lora(lora_scale=0.7)
+                adapter_names = list(pipe.get_active_adapters())
+                if adapter_names:
+                    pipe.set_adapters(adapter_names, adapter_weights=[0.7] * len(adapter_names))
+                else:
+                    pipe.fuse_lora(lora_scale=0.7)
+            except Exception as exc:
+                print(f"[part3] LoRA adapter set failed: {exc}, trying fuse_lora")
+                try:
+                    pipe.fuse_lora(lora_scale=0.7)
+                except Exception as exc2:
+                    print(f"[part3] LoRA fuse also failed: {exc2}, continuing without")
             lora_applied = True
         except Exception as exc:
             print(f"[part3] Warning: LoRA load failed, continuing without LoRA: {exc}")
@@ -227,19 +236,29 @@ def run_part3(
     harmonizer = _build_sdxl_harmonizer(models_dir)
     _ = apply_lora_if_available(harmonizer, lora_path, scale=0.35)
     h_start = time.time()
-    try:
-        h_result = harmonizer(
-            prompt=positive_prompt,
-            negative_prompt=negative_prompt,
-            image=part3_pre,
-            strength=0.15,
-            guidance_scale=6.5,
-            num_inference_steps=5,
-            generator=torch.Generator(device=gen_device).manual_seed(43),
-        )
-        final_image = h_result.images[0]
-    except Exception as exc:
-        print(f"[part3] Harmonization skipped: {exc}")
+    if styled_image is not None:
+        arr = np.array(styled_image)
+        if arr.size > 0 and float(arr.mean()) > 5.0:
+            try:
+                h_input = styled_image.resize((768, 768), Image.Resampling.LANCZOS)
+                h_result = harmonizer(
+                    prompt=positive_prompt,
+                    negative_prompt=negative_prompt,
+                    image=h_input,
+                    strength=0.15,
+                    guidance_scale=6.5,
+                    num_inference_steps=5,
+                    generator=torch.Generator(device=gen_device).manual_seed(43),
+                )
+                final_image = h_result.images[0]
+                print("[part3] Harmonization successful")
+            except Exception as exc:
+                print(f"[part3] Harmonization skipped: {exc}")
+                final_image = styled_image
+        else:
+            print("[part3] Harmonization skipped: invalid input image")
+            final_image = styled_image
+    else:
         final_image = styled_image
     harmonized = final_image.resize((SDXL_SIZE, SDXL_SIZE), Image.Resampling.LANCZOS)
     harmonization_time = time.time() - h_start

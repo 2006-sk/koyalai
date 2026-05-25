@@ -20,8 +20,6 @@ from part1_pipeline import (
     DEFAULT_STRENGTH,
     DEVICE,
     DTYPE,
-    NEGATIVE_PROMPT,
-    PROMPT,
     clear_device_cache,
     get_input_image_path,
     run_part1,
@@ -50,6 +48,19 @@ CLIP_ENCODER_FILES = [
     "merges.txt",
     "special_tokens_map.json",
 ]
+
+PART2_PROMPT = (
+    "one piece anime, eiichiro oda style, shounen manga, "
+    "clean flat skin tone, bright warm colors, bold black outlines, "
+    "friendly neutral expression, mouth closed, clean face, "
+    "bright white background, red shirt character, adventure manga"
+)
+PART2_NEGATIVE_PROMPT = (
+    "angry, teeth, open mouth, dark skin, heavy shadows, "
+    "scary, horror, menacing, realistic, photorealistic, "
+    "gradient shading, wrinkles, deformed, blurry, ugly, "
+    "extra objects on document, watermark"
+)
 
 
 @dataclass
@@ -145,7 +156,7 @@ def run_part2(
     project_root: Optional[Path] = None,
     strength: float = DEFAULT_STRENGTH,
     controlnet_scale: float = DEFAULT_CONTROLNET_SCALE,
-    ip_adapter_scale: float = 0.5,
+    ip_adapter_scale: float = 0.6,
     guidance_scale: float = 7.5,
     num_inference_steps: int = 28,
     seed: int = 42,
@@ -203,7 +214,7 @@ def run_part2(
             weight_name="ip-adapter_sd15.bin",
             image_encoder_folder=None,
         )
-        pipe.set_ip_adapter_scale(0.5)
+        pipe.set_ip_adapter_scale(ip_adapter_scale)
         # Only after IP-Adapter is loaded.
         pipe.vae.enable_slicing()
 
@@ -220,8 +231,8 @@ def run_part2(
         part2_img = load_image(part1_result.output_path)
     else:
         result = pipe(
-            prompt=PROMPT,
-            negative_prompt=NEGATIVE_PROMPT,
+            prompt=PART2_PROMPT,
+            negative_prompt=PART2_NEGATIVE_PROMPT,
             image=original_512,
             control_image=lineart_img,
             ip_adapter_image=face_result.face_crop,
@@ -297,7 +308,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input", type=str, default=None, help="Path to input image.")
     parser.add_argument("--strength", type=float, default=DEFAULT_STRENGTH)
     parser.add_argument("--control-scale", type=float, default=DEFAULT_CONTROLNET_SCALE)
-    parser.add_argument("--ip-scale", type=float, default=0.5)
+    parser.add_argument("--ip-scale", type=float, default=0.6)
     parser.add_argument("--guidance", type=float, default=7.5)
     parser.add_argument("--steps", type=int, default=28)
     parser.add_argument("--seed", type=int, default=42)

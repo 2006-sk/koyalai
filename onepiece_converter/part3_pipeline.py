@@ -54,13 +54,13 @@ def _load_best_params(models_dir: Path) -> Dict[str, float]:
         try:
             data = json.loads(best_path.read_text(encoding="utf-8"))
             return {
-                "ip_adapter_scale": float(data.get("ip_adapter_scale", 0.4)),
+                "ip_adapter_scale": float(data.get("ip_adapter_scale", 0.5)),
                 "controlnet_scale": float(data.get("controlnet_scale", 0.7)),
                 "denoising_strength": float(data.get("denoising_strength", 0.55)),
             }
         except Exception as exc:
             print(f"[part3] Warning: failed reading best_params.json: {exc}")
-    return {"ip_adapter_scale": 0.4, "controlnet_scale": 0.7, "denoising_strength": 0.55}
+    return {"ip_adapter_scale": 0.5, "controlnet_scale": 0.7, "denoising_strength": 0.55}
 
 
 def _save_five_panel(
@@ -102,6 +102,7 @@ def run_part3(
     seed: int = 42,
     num_inference_steps: int = 25,
     guidance_scale: float = 7.5,
+    lora_scale: float = 0.4,
 ) -> Part3Result:
     root = (project_root or Path(__file__).resolve().parent).resolve()
     models_dir = root / "models"
@@ -179,7 +180,7 @@ def run_part3(
     ip_image = face_res.face_crop if face_res.face_crop is not None else original
 
     lora_path = download_onepiece_lora(models_dir)
-    lora_applied = apply_lora_if_available(pipe, lora_path, scale=0.7)
+    lora_applied = apply_lora_if_available(pipe, lora_path, scale=lora_scale)
 
     gen_device = DEVICE if DEVICE != "mps" else "cpu"
     generator = torch.Generator(device=gen_device).manual_seed(seed)
@@ -199,7 +200,7 @@ def run_part3(
 
     print("[part3] Step 6/8: Harmonization pass...")
     harmonizer = _build_harmonizer(root)
-    _ = apply_lora_if_available(harmonizer, lora_path, scale=0.35)
+    _ = apply_lora_if_available(harmonizer, lora_path, scale=0.2)
     h_start = time.time()
     h_result = harmonizer(
         prompt=positive_prompt,
@@ -275,6 +276,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--steps", type=int, default=25)
     parser.add_argument("--guidance", type=float, default=7.5)
+    parser.add_argument("--lora-scale", type=float, default=0.4)
     return parser.parse_args()
 
 
@@ -289,6 +291,7 @@ def main() -> None:
         seed=args.seed,
         num_inference_steps=args.steps,
         guidance_scale=args.guidance,
+        lora_scale=args.lora_scale,
     )
 
 

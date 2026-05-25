@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 import torch
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageEnhance
 from transformers import CLIPVisionModelWithProjection
 
 from part1_pipeline import (
@@ -192,7 +192,10 @@ def run_part3(
     part3_pre = result.images[0].resize((512, 512), Image.Resampling.LANCZOS)
 
     clear_device_cache()
-    part3_final = part3_pre
+    part3_final = ImageEnhance.Brightness(part3_pre).enhance(1.08)
+    part3_final = ImageEnhance.Contrast(part3_final).enhance(1.20)
+    part3_final = ImageEnhance.Color(part3_final).enhance(1.45)
+    part3_final = ImageEnhance.Sharpness(part3_final).enhance(1.30)
 
     run_id = f"{input_image.stem}_{timestamp_string()}"
     part3_path = outputs_dir / f"{run_id}_part3_styled.png"

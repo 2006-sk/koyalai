@@ -102,7 +102,8 @@ def run_part3(
     seed: int = 42,
     num_inference_steps: int = 25,
     guidance_scale: float = 7.5,
-    lora_scale: float = 0.4,
+    lora_scale: float = 0.5,
+    ip_scale_p3: float = 0.65,
 ) -> Part3Result:
     root = (project_root or Path(__file__).resolve().parent).resolve()
     models_dir = root / "models"
@@ -155,46 +156,63 @@ def run_part3(
     print("[part3] Step 4/8: Building dynamic prompt...")
     positive_prompt, negative_prompt = build_dynamic_prompt(scene_context, person_count, arc=arc)
 
-    print("[part3] Step 5/8: Main generation with LoRA + ControlNet + IP-Adapter...")
+    print("[part3] Step 5/8: Style pass with LoRA, then identity pass with IP-Adapter...")
     lineart_pre = LineartPreprocessor(model_dir=models_dir / "lineart_annotators")
     lineart = lineart_pre.extract_lineart(original).convert("RGB")
 
-    pipe, _device, _dtype = _build_part2_pipeline(root)
+    lora_path = download_onepiece_lora(models_dir)
+    style_pipe, _device, _dtype = _build_part2_pipeline(root)
+    lora_applied = apply_lora_if_available(style_pipe, lora_path, scale=lora_scale)
+
+    gen_device = DEVICE if DEVICE != "mps" else "cpu"
+    style_generator = torch.Generator(device=gen_device).manual_seed(seed)
+    style_result = style_pipe(
+        prompt=positive_prompt,
+        negative_prompt=negative_prompt,
+        image=original,
+        control_image=lineart,
+        strength=denoising,
+        controlnet_conditioning_scale=cn_scale,
+        num_inference_steps=num_inference_steps,
+        guidance_scale=guidance_scale,
+        generator=style_generator,
+    )
+    lora_styled = style_result.images[0].resize((512, 512), Image.Resampling.LANCZOS)
+    del style_pipe
+    clear_device_cache()
+
+    identity_pipe, _device, _dtype = _build_part2_pipeline(root)
     ip_file, encoder_dir = _download_ip_adapter_assets(models_dir)
     image_encoder = CLIPVisionModelWithProjection.from_pretrained(
         "h94/IP-Adapter",
         subfolder="models/image_encoder",
         torch_dtype=DTYPE,
     ).to(DEVICE)
-    pipe.image_encoder = image_encoder
-    pipe.load_ip_adapter(
+    identity_pipe.image_encoder = image_encoder
+    identity_pipe.load_ip_adapter(
         "h94/IP-Adapter",
         subfolder="models",
         weight_name="ip-adapter_sd15.bin",
         image_encoder_folder=None,
     )
-    pipe.set_ip_adapter_scale(ip_scale)
+    identity_pipe.set_ip_adapter_scale(ip_scale_p3)
 
     face_extractor = FaceExtractor()
     face_res = face_extractor.extract_face_crop(original)
     ip_image = face_res.face_crop if face_res.face_crop is not None else original
 
-    lora_path = download_onepiece_lora(models_dir)
-    lora_applied = apply_lora_if_available(pipe, lora_path, scale=lora_scale)
-
-    gen_device = DEVICE if DEVICE != "mps" else "cpu"
-    generator = torch.Generator(device=gen_device).manual_seed(seed)
-    result = pipe(
+    identity_generator = torch.Generator(device=gen_device).manual_seed(seed + 1)
+    result = identity_pipe(
         prompt=positive_prompt,
         negative_prompt=negative_prompt,
-        image=original,
+        image=lora_styled,
         control_image=lineart,
         ip_adapter_image=ip_image,
-        strength=denoising,
+        strength=0.35,
         controlnet_conditioning_scale=cn_scale,
         num_inference_steps=num_inference_steps,
         guidance_scale=guidance_scale,
-        generator=generator,
+        generator=identity_generator,
     )
     part3_pre = result.images[0].resize((512, 512), Image.Resampling.LANCZOS)
 
@@ -276,7 +294,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--steps", type=int, default=25)
     parser.add_argument("--guidance", type=float, default=7.5)
-    parser.add_argument("--lora-scale", type=float, default=0.4)
+    parser.add_argument("--lora-scale", type=float, default=0.5)
+    parser.add_argument("--ip-scale-p3", type=float, default=0.65)
     return parser.parse_args()
 
 
@@ -292,6 +311,7 @@ def main() -> None:
         num_inference_steps=args.steps,
         guidance_scale=args.guidance,
         lora_scale=args.lora_scale,
+        ip_scale_p3=args.ip_scale_p3,
     )
 
 

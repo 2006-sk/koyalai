@@ -114,19 +114,38 @@ def _build_part2_pipeline(project_root: Path) -> tuple[StableDiffusionControlNet
     if not controlnet_path.exists():
         raise FileNotFoundError(f"Missing controlnet directory: {controlnet_path}")
 
-    controlnet = ControlNetModel.from_pretrained(
-        controlnet_path.as_posix(),
-        torch_dtype=DTYPE,
-        use_safetensors=True,
-    )
-    pipe = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(
-        base_model_path.as_posix(),
-        controlnet=controlnet,
-        torch_dtype=DTYPE,
-        use_safetensors=True,
-        safety_checker=None,
-        requires_safety_checker=False,
-    )
+    try:
+        controlnet = ControlNetModel.from_pretrained(
+            controlnet_path.as_posix(),
+            torch_dtype=DTYPE,
+            variant="fp16",
+            use_safetensors=True,
+        )
+    except Exception:
+        controlnet = ControlNetModel.from_pretrained(
+            controlnet_path.as_posix(),
+            torch_dtype=DTYPE,
+            use_safetensors=True,
+        )
+    try:
+        pipe = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(
+            base_model_path.as_posix(),
+            controlnet=controlnet,
+            torch_dtype=DTYPE,
+            variant="fp16",
+            use_safetensors=True,
+            safety_checker=None,
+            requires_safety_checker=False,
+        )
+    except Exception:
+        pipe = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(
+            base_model_path.as_posix(),
+            controlnet=controlnet,
+            torch_dtype=DTYPE,
+            use_safetensors=True,
+            safety_checker=None,
+            requires_safety_checker=False,
+        )
     # IMPORTANT: do not enable attention/vae slicing before IP-Adapter load.
     pipe = pipe.to(DEVICE)
     return pipe, DEVICE, DTYPE

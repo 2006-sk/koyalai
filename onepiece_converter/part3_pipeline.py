@@ -13,6 +13,8 @@ from typing import Dict, Optional
 import numpy as np
 import torch
 from diffusers import (
+    ControlNetModel,
+    StableDiffusionXLControlNetImg2ImgPipeline,
     StableDiffusionXLImg2ImgPipeline,
 )
 from PIL import Image
@@ -20,7 +22,6 @@ from PIL import Image
 from part1_pipeline import (
     DEVICE,
     DTYPE,
-    build_pipeline,
     clear_device_cache,
     get_canny_image,
     get_input_image_path,
@@ -104,13 +105,29 @@ def _save_five_panel(
 
 def _sdxl_available(models_dir: Path) -> bool:
     return (models_dir / "sdxl_base" / "model_index.json").exists() and (
-        models_dir / "sdxl_controlnet" / "diffusion_pytorch_model_V2.safetensors"
+        models_dir / "sdxl_controlnet" / "diffusion_pytorch_model.safetensors"
     ).exists()
 
 
 def _build_sdxl_harmonizer(models_dir: Path):
     pipe = StableDiffusionXLImg2ImgPipeline.from_pretrained(
         (models_dir / "sdxl_base").as_posix(),
+        torch_dtype=torch.float16,
+        use_safetensors=True,
+        add_watermarker=False,
+    )
+    return pipe.to(DEVICE)
+
+
+def _build_sdxl_main_pipe(models_dir: Path):
+    controlnet = ControlNetModel.from_pretrained(
+        (models_dir / "sdxl_controlnet").as_posix(),
+        torch_dtype=torch.float16,
+        use_safetensors=True,
+    )
+    pipe = StableDiffusionXLControlNetImg2ImgPipeline.from_pretrained(
+        (models_dir / "sdxl_base").as_posix(),
+        controlnet=controlnet,
         torch_dtype=torch.float16,
         use_safetensors=True,
         add_watermarker=False,
@@ -190,9 +207,9 @@ def run_part3(
     if not _sdxl_available(models_dir):
         raise FileNotFoundError(
             "SDXL assets missing. Expected models/sdxl_base/model_index.json and "
-            "models/sdxl_controlnet/diffusion_pytorch_model_V2.safetensors"
+            "models/sdxl_controlnet/diffusion_pytorch_model.safetensors"
         )
-    pipe, _p_device, _p_dtype = build_pipeline(root)
+    pipe = _build_sdxl_main_pipe(models_dir)
     lora_applied = False
     if lora_path is not None and lora_path.exists():
         try:

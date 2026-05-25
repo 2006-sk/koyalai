@@ -121,6 +121,7 @@ def run_part3(
     input_image: Path,
     project_root: Optional[Path] = None,
     arc: str = "adventure",
+    skip_baselines: bool = False,
 ) -> Part3Result:
     root = (project_root or Path(__file__).resolve().parent).resolve()
     models_dir = root / "models"
@@ -134,22 +135,27 @@ def run_part3(
     denoising = params["denoising_strength"]
     print(f"[part3] Loaded best params: ip={ip_scale}, cn={cn_scale}, denoise={denoising}")
 
-    print("[part3] Step 1/8: Running Part 1 and Part 2 baselines...")
-    part1 = run_part1(
-        input_image=input_image,
-        project_root=root,
-        controlnet_scale=cn_scale,
-        strength=denoising,
-        num_inference_steps=25,
-    )
-    part2 = run_part2(
-        input_image=input_image,
-        project_root=root,
-        controlnet_scale=cn_scale,
-        ip_adapter_scale=ip_scale,
-        strength=denoising,
-        num_inference_steps=25,
-    )
+    if skip_baselines:
+        print("[part3] Skipping baselines — running Part 3 only")
+        part1 = None
+        part2 = None
+    else:
+        print("[part3] Step 1/8: Running Part 1 and Part 2 baselines...")
+        part1 = run_part1(
+            input_image=input_image,
+            project_root=root,
+            controlnet_scale=cn_scale,
+            strength=denoising,
+            num_inference_steps=25,
+        )
+        part2 = run_part2(
+            input_image=input_image,
+            project_root=root,
+            controlnet_scale=cn_scale,
+            ip_adapter_scale=ip_scale,
+            strength=denoising,
+            num_inference_steps=25,
+        )
 
     print("[part3] Step 2/8: Scene analysis...")
     original = resize_with_padding(load_image(input_image), size=(SDXL_SIZE, SDXL_SIZE))
@@ -176,7 +182,10 @@ def run_part3(
     lora_path = download_onepiece_lora(models_dir)
     gen_device = DEVICE if DEVICE != "mps" else "cpu"
 
-    control_panel = load_image(part1.lineart_path).resize((SDXL_SIZE, SDXL_SIZE), Image.Resampling.LANCZOS)
+    if part1 is not None:
+        control_panel = load_image(part1.lineart_path).resize((SDXL_SIZE, SDXL_SIZE), Image.Resampling.LANCZOS)
+    else:
+        control_panel = get_canny_image(original)
     if not _sdxl_available(models_dir):
         raise FileNotFoundError(
             "SDXL assets missing. Expected models/sdxl_base/model_index.json and "
@@ -250,8 +259,16 @@ def run_part3(
     part3_pre.save(part3_pre_path)
     part3_final.save(part3_path)
     save_person_map_visualization(original, person_map, person_map_path)
-    part1_img = load_image(part1.output_path)
-    part2_img = load_image(part2.part2_path)
+    part1_img = (
+        load_image(part1.output_path)
+        if part1 is not None
+        else resize_with_padding(load_image(input_image), size=(512, 512))
+    )
+    part2_img = (
+        load_image(part2.part2_path)
+        if part2 is not None
+        else resize_with_padding(load_image(input_image), size=(512, 512))
+    )
     _save_five_panel(
         original=resize_with_padding(load_image(input_image), size=(512, 512)),
         panel2=control_panel.resize((512, 512), Image.Resampling.LANCZOS),
@@ -265,6 +282,7 @@ def run_part3(
         "input_image": input_image.as_posix(),
         "arc": arc,
         "best_params": params,
+        "skip_baselines": skip_baselines,
         "sdxl_used": True,
         "positive_prompt": positive_prompt,
         "negative_prompt": negative_prompt,
@@ -295,6 +313,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Part 3 One Piece converter pipeline.")
     parser.add_argument("--input", type=str, default=None, help="Path to input image.")
     parser.add_argument("--arc", type=str, default="adventure", choices=("adventure", "dramatic", "wano"))
+    parser.add_argument(
+        "--skip-baselines",
+        action="store_true",
+        help="Skip Part 1 and Part 2 and run Part 3 only.",
+    )
     return parser.parse_args()
 
 
@@ -302,7 +325,12 @@ def main() -> None:
     args = parse_args()
     root = Path(__file__).resolve().parent
     input_path = get_input_image_path(root, args.input)
-    run_part3(input_image=input_path, project_root=root, arc=args.arc)
+    run_part3(
+        input_image=input_path,
+        project_root=root,
+        arc=args.arc,
+        skip_baselines=args.skip_baselines,
+    )
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ from typing import Dict, Optional
 from huggingface_hub import hf_hub_download
 import torch
 from PIL import Image
+from transformers import CLIPVisionModelWithProjection
 
 from part1_pipeline import (
     DEFAULT_CONTROLNET_SCALE,
@@ -162,13 +163,18 @@ def run_part2(
 
     print("[part2] Stage 5/7: Attaching IP-Adapter...")
     if not no_face_fallback:
+        image_encoder = CLIPVisionModelWithProjection.from_pretrained(
+            str(models_dir / "ip_adapter_encoder"),
+            torch_dtype=torch.float16,
+        ).to(DEVICE)
+        pipe.image_encoder = image_encoder
         pipe.load_ip_adapter(
-            pretrained_model_name_or_path=ip_file.parent.as_posix(),
-            subfolder="",
-            weight_name=ip_file.name,
-            image_encoder_folder=encoder_dir.as_posix(),
+            "h94/IP-Adapter",
+            subfolder="models",
+            weight_name="ip-adapter_sd15.bin",
+            image_encoder_folder=None,
         )
-        pipe.set_ip_adapter_scale(ip_adapter_scale)
+        pipe.set_ip_adapter_scale(0.5)
 
     print("[part2] Stage 6/7: Generating Part 2 output...")
     if DEVICE == "cuda" and torch.cuda.is_available():

@@ -7,13 +7,8 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 import cv2
-import mediapipe as mp
 import numpy as np
 from PIL import Image
-
-
-LEFT_EYE_IDS = [33, 133, 160, 159, 158, 157, 173]
-RIGHT_EYE_IDS = [362, 263, 387, 386, 385, 384, 398]
 
 
 @dataclass
@@ -25,94 +20,69 @@ class FaceDetectionResult:
     laplacian_variance: float
 
 
+def detect_and_crop_face(image: Image.Image) -> Optional[Image.Image]:
+    img_array = np.array(image.convert("RGB"))
+    gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+    detector = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    faces = detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(30, 30))
+    if len(faces) == 0:
+        return None
+    x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
+    padding = int(0.2 * max(w, h))
+    x1 = max(0, x - padding)
+    y1 = max(0, y - padding)
+    x2 = min(img_array.shape[1], x + w + padding)
+    y2 = min(img_array.shape[0], y + h + padding)
+    face_crop = image.crop((x1, y1, x2, y2)).resize((256, 256), Image.Resampling.LANCZOS)
+    return face_crop
+
+
+def has_eyes(face_crop: Image.Image) -> bool:
+    img_array = np.array(face_crop.convert("RGB"))
+    gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+    eye_detector = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_eye.xml")
+    eyes = eye_detector.detectMultiScale(gray, 1.1, 3)
+    return len(eyes) >= 1
+
+
+def is_blurry(image: Image.Image, threshold: float = 80.0) -> bool:
+    img_array = np.array(image.convert("L"))
+    lap_var = cv2.Laplacian(img_array, cv2.CV_64F).var()
+    return float(lap_var) < threshold
+
+
 class FaceExtractor:
-    """MediaPipe-based face detection and crop extraction."""
-
-    def __init__(self, min_detection_confidence: float = 0.5) -> None:
-        self.detector = mp.solutions.face_detection.FaceDetection(
-            model_selection=1,
-            min_detection_confidence=min_detection_confidence,
-        )
-        self.mesh = mp.solutions.face_mesh.FaceMesh(
-            static_image_mode=True,
-            max_num_faces=1,
-            refine_landmarks=True,
-            min_detection_confidence=min_detection_confidence,
-        )
-
-    def detect_primary_face_bbox(self, image: Image.Image) -> Optional[Tuple[int, int, int, int]]:
-        rgb = np.array(image.convert("RGB"))
-        h, w = rgb.shape[:2]
-        result = self.detector.process(rgb)
-        if not result.detections:
-            return None
-        box = result.detections[0].location_data.relative_bounding_box
-        x1 = max(0, int(box.xmin * w))
-        y1 = max(0, int(box.ymin * h))
-        x2 = min(w, int((box.xmin + box.width) * w))
-        y2 = min(h, int((box.ymin + box.height) * h))
-        if x2 <= x1 or y2 <= y1:
-            return None
-        return x1, y1, x2, y2
-
-    def _expand_bbox(
-        self,
-        bbox: Tuple[int, int, int, int],
-        width: int,
-        height: int,
-        padding_ratio: float = 0.25,
-    ) -> Tuple[int, int, int, int]:
-        x1, y1, x2, y2 = bbox
-        bw = x2 - x1
-        bh = y2 - y1
-        pad_x = int(bw * padding_ratio)
-        pad_y = int(bh * padding_ratio)
-        ex1 = max(0, x1 - pad_x)
-        ey1 = max(0, y1 - pad_y)
-        ex2 = min(width, x2 + pad_x)
-        ey2 = min(height, y2 + pad_y)
-        return ex1, ey1, ex2, ey2
-
-    def _eyes_detected(self, face_crop: Image.Image) -> bool:
-        rgb = np.array(face_crop.convert("RGB"))
-        mesh_result = self.mesh.process(rgb)
-        if not mesh_result.multi_face_landmarks:
-            return False
-        landmarks = mesh_result.multi_face_landmarks[0].landmark
-        return all(0.0 <= landmarks[i].x <= 1.0 and 0.0 <= landmarks[i].y <= 1.0 for i in LEFT_EYE_IDS + RIGHT_EYE_IDS)
-
-    def _laplacian_var(self, image: Image.Image) -> float:
-        gray = cv2.cvtColor(np.array(image.convert("RGB")), cv2.COLOR_RGB2GRAY)
-        return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    """OpenCV Haar-based face extraction wrapper."""
 
     def extract_face_crop(self, image: Image.Image, target_size: int = 256) -> FaceDetectionResult:
         rgb = np.array(image.convert("RGB"))
         h, w = rgb.shape[:2]
-        bbox = self.detect_primary_face_bbox(image)
-        if bbox is None:
-            return FaceDetectionResult(
-                face_crop=None,
-                bbox_xyxy=None,
-                face_area_ratio=0.0,
-                eyes_detected=False,
-                laplacian_variance=0.0,
-            )
+        gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+        detector = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+        faces = detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(30, 30))
+        if len(faces) == 0:
+            return FaceDetectionResult(None, None, 0.0, False, 0.0)
 
-        ex1, ey1, ex2, ey2 = self._expand_bbox(bbox, width=w, height=h)
-        crop = image.crop((ex1, ey1, ex2, ey2)).resize((target_size, target_size), Image.Resampling.LANCZOS)
-        bbox_area = float((bbox[2] - bbox[0]) * (bbox[3] - bbox[1]))
+        x, y, fw, fh = max(faces, key=lambda f: f[2] * f[3])
+        padding = int(0.2 * max(fw, fh))
+        x1 = max(0, x - padding)
+        y1 = max(0, y - padding)
+        x2 = min(w, x + fw + padding)
+        y2 = min(h, y + fh + padding)
+        face_crop = image.crop((x1, y1, x2, y2)).resize((target_size, target_size), Image.Resampling.LANCZOS)
+
+        bbox_area = float(fw * fh)
         full_area = float(max(1, w * h))
         area_ratio = bbox_area / full_area
-
-        eyes_ok = self._eyes_detected(crop)
-        blur_score = self._laplacian_var(crop)
+        eyes_ok = has_eyes(face_crop)
+        lap_var = float(cv2.Laplacian(np.array(face_crop.convert("L")), cv2.CV_64F).var())
 
         return FaceDetectionResult(
-            face_crop=crop,
-            bbox_xyxy=bbox,
+            face_crop=face_crop,
+            bbox_xyxy=(int(x), int(y), int(x + fw), int(y + fh)),
             face_area_ratio=area_ratio,
             eyes_detected=eyes_ok,
-            laplacian_variance=blur_score,
+            laplacian_variance=lap_var,
         )
 
 

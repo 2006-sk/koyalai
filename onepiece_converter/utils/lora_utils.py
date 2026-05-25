@@ -8,8 +8,8 @@ from typing import Optional
 from huggingface_hub import hf_hub_download
 
 
-LORA_REPO = "artificialguybr/OnePieceAnimeLoRA"
-LORA_FILE = "OnePieceAnime_LoRA.safetensors"
+LORA_REPO = "kusnim1121/stable-diffusion-one-piece-lora"
+LORA_FILE = "pytorch_lora_weights.safetensors"
 
 
 def download_onepiece_lora(models_dir: Path) -> Optional[Path]:
@@ -36,7 +36,10 @@ def apply_lora_if_available(pipe, lora_path: Optional[Path], scale: float) -> bo
     if lora_path is None or not lora_path.exists():
         return False
     try:
-        pipe.load_lora_weights(lora_path.parent.as_posix(), weight_name=lora_path.name)
+        pipe.load_lora_weights(
+            lora_path.parent.as_posix(),
+            weight_name="pytorch_lora_weights.safetensors",
+        )
         pipe.fuse_lora(lora_scale=scale)
         return True
     except Exception as exc:

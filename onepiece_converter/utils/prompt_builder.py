@@ -72,7 +72,7 @@ def build_dynamic_prompt(
     arc: str = "adventure",
 ) -> tuple[str, str]:
     base = (
-        "one piece anime, eiichiro oda style, shounen manga, "
+        "one piece anime style, eiichiro oda, shounen manga, "
         "bold black outlines, flat cel shading, bright colors"
     )
     scene_desc = (

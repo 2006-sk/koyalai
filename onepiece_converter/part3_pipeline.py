@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 
-import numpy as np
 import torch
 from diffusers import StableDiffusionImg2ImgPipeline
 from PIL import Image, ImageDraw
@@ -225,14 +224,6 @@ def run_part3(
 
     print("[part3] Step 7/8: Arc color grading...")
     part3_final = apply_arc_color_grading(harmonized, arc=arc, reference_input=original)
-    arr = np.array(part3_final)
-    gray = arr.mean(axis=2)
-    rows = np.any(gray > 10, axis=1)
-    cols = np.any(gray > 10, axis=0)
-    if rows.any() and cols.any():
-        r0, r1 = np.where(rows)[0][[0, -1]]
-        c0, c1 = np.where(cols)[0][[0, -1]]
-        part3_final = part3_final.crop((c0, r0, c1 + 1, r1 + 1))
 
     run_id = f"{input_image.stem}_{timestamp_string()}"
     part3_path = outputs_dir / f"{run_id}_part3_styled.png"

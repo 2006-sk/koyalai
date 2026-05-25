@@ -47,15 +47,16 @@ DEVICE, DTYPE = get_device()
 
 
 PROMPT = (
-    "one piece anime, eiichiro oda art style, luffy style character, "
-    "clean flat skin tone, bright cheerful manga, bold clean outlines, "
-    "flat cel shading, white background, adventure manga panel, "
-    "friendly expression, clean face, shounen anime"
+    "one piece anime style, eiichiro oda, shounen manga, "
+    "bright cheerful colors, clean flat cel shading, "
+    "bold clean black outlines, friendly neutral expression, "
+    "soft skin tone, bright white background, adventure manga"
 )
 NEGATIVE_PROMPT = (
-    "realistic, photorealistic, 3d, horror, dark, scary, grotesque, "
-    "berserk, attack on titan, dark manga, shadow face, heavy shading, "
-    "gradient skin, wrinkles, ugly, deformed, noisy, blurry"
+    "angry, menacing, scary, dark, horror, realistic, "
+    "photorealistic, 3d render, gradient shading, "
+    "extra stickers, extra objects, watermark, blurry, "
+    "deformed, ugly, extra marks on clothing"
 )
 DEFAULT_STRENGTH = 0.65
 DEFAULT_CONTROLNET_SCALE = 0.8
